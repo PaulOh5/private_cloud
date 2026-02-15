@@ -49,6 +49,8 @@ services:
       TOTAL_MEMORY_MIB: ${TOTAL_MEMORY_MIB:-131072}
       TOTAL_DISK_GIB: ${TOTAL_DISK_GIB:-2000}
       VM_COMMAND_TIMEOUT_SECONDS: 120
+      TASK_STALE_QUEUED_TIMEOUT_SECONDS: ${TASK_STALE_QUEUED_TIMEOUT_SECONDS:-180}
+      TASK_STALE_SWEEP_INTERVAL_SECONDS: ${TASK_STALE_SWEEP_INTERVAL_SECONDS:-15}
     ports:
       - "${MAIN_API_PORT:-8000}:8000"
     healthcheck:
@@ -65,6 +67,7 @@ services:
   vm-manager:
     build:
       context: ./vm-manager
+    restart: unless-stopped
     privileged: true
     network_mode: host
     environment:
@@ -72,7 +75,9 @@ services:
       VM_MANAGER_CONCURRENCY: ${VM_MANAGER_CONCURRENCY:-4}
       BASE_IMAGE_URL: ${BASE_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}
       VM_BASE_DIR: ${VM_BASE_DIR:-/var/lib/vm-manager}
+      VM_EGRESS_INTERFACE: ${VM_EGRESS_INTERFACE:-}
       VM_COMMAND_TIMEOUT_SECONDS: 120
+      VM_NETWORK_CLEANUP_INTERVAL_SECONDS: ${VM_NETWORK_CLEANUP_INTERVAL_SECONDS:-300}
     volumes:
       - vmdata:${VM_BASE_DIR:-/var/lib/vm-manager}
       - /var/run:/var/run

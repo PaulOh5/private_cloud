@@ -1,11 +1,14 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -28,7 +31,7 @@ func NewManager(cfg config.Config) *Manager {
 	return &Manager{
 		cfg:       cfg,
 		store:     infra.NewStateStore(cfg.VMBaseDir),
-		network:   infra.NewNetworkManager(runner),
+		network:   infra.NewNetworkManager(runner, cfg.EgressInterface),
 		cloudInit: infra.NewCloudInitBuilder(runner),
 		qemu:      infra.NewQemuManager(runner),
 	}
@@ -248,6 +251,9 @@ func (m *Manager) deleteVM(correlationID string, payload model.DeletePayload) (m
 	st, err := m.store.LoadInstance(payload.InstanceID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			_ = m.network.CleanupByInstanceID(payload.InstanceID)
+			_ = os.RemoveAll(filepath.Join(m.cfg.VMBaseDir, "instances", payload.InstanceID))
+			_ = m.store.DeleteInstance(payload.InstanceID)
 			return model.CommandResponse{CorrelationID: correlationID, Success: true, Result: map[string]any{"status": "deleted"}}, nil
 		}
 		resp := failure(correlationID, "VM_NOT_FOUND", "instance state not found")
@@ -268,6 +274,7 @@ func (m *Manager) deleteVM(correlationID string, payload model.DeletePayload) (m
 		resp := failure(correlationID, "NETWORK_ERROR", err.Error())
 		return resp, err
 	}
+	_ = m.network.CleanupByInstanceID(payload.InstanceID)
 
 	instanceDir := filepath.Join(m.cfg.VMBaseDir, "instances", payload.InstanceID)
 	if err := os.RemoveAll(instanceDir); err != nil {
@@ -280,6 +287,71 @@ func (m *Manager) deleteVM(correlationID string, payload model.DeletePayload) (m
 	}
 
 	return model.CommandResponse{CorrelationID: correlationID, Success: true, Result: map[string]any{"status": "deleted"}}, nil
+}
+
+func (m *Manager) StartNetworkJanitor(ctx context.Context) {
+	interval := m.cfg.NetworkCleanupInterval
+	if interval <= 0 {
+		log.Printf("network janitor disabled")
+		return
+	}
+
+	if err := m.CleanupStaleNetworkInterfaces(); err != nil {
+		log.Printf("network janitor initial cleanup failed: %v", err)
+	}
+
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := m.CleanupStaleNetworkInterfaces(); err != nil {
+					log.Printf("network janitor cleanup failed: %v", err)
+				}
+			}
+		}
+	}()
+	log.Printf("network janitor started with interval=%s", interval)
+}
+
+func (m *Manager) CleanupStaleNetworkInterfaces() error {
+	states, err := m.store.ListInstances()
+	if err != nil {
+		return err
+	}
+
+	activeSuffixes := map[string]struct{}{}
+	for _, st := range states {
+		if suffix := shortInstanceID(st.InstanceID); suffix != "" {
+			activeSuffixes[suffix] = struct{}{}
+		}
+	}
+
+	managedSuffixes, err := m.network.ListManagedSuffixes()
+	if err != nil {
+		return err
+	}
+
+	for suffix := range managedSuffixes {
+		if _, ok := activeSuffixes[suffix]; ok {
+			continue
+		}
+		if err := m.network.CleanupBySuffix(suffix); err != nil {
+			log.Printf("network janitor cleanup suffix=%s failed: %v", suffix, err)
+		}
+	}
+	return nil
+}
+
+func shortInstanceID(instanceID string) string {
+	short := instanceID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return short
 }
 
 func failure(correlationID, code, message string) model.CommandResponse {

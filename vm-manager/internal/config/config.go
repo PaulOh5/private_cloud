@@ -9,22 +9,26 @@ import (
 )
 
 type Config struct {
-	RabbitMQURL         string
-	Concurrency         int
-	BaseImageURL        string
-	VMBaseDir           string
-	CommandTimeout      time.Duration
-	OperationRetryCount int
+	RabbitMQURL            string
+	Concurrency            int
+	BaseImageURL           string
+	VMBaseDir              string
+	EgressInterface        string
+	CommandTimeout         time.Duration
+	OperationRetryCount    int
+	NetworkCleanupInterval time.Duration
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		RabbitMQURL:         getEnv("RABBITMQ_URL", "amqp://cloud:cloud@localhost:5672/"),
-		BaseImageURL:        getEnv("BASE_IMAGE_URL", "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"),
-		VMBaseDir:           getEnv("VM_BASE_DIR", "/var/lib/vm-manager"),
-		Concurrency:         getEnvInt("VM_MANAGER_CONCURRENCY", 4),
-		CommandTimeout:      time.Duration(getEnvInt("VM_COMMAND_TIMEOUT_SECONDS", 120)) * time.Second,
-		OperationRetryCount: getEnvInt("VM_OPERATION_RETRY_COUNT", 3),
+		RabbitMQURL:            getEnv("RABBITMQ_URL", "amqp://cloud:cloud@localhost:5672/"),
+		BaseImageURL:           getEnv("BASE_IMAGE_URL", "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"),
+		VMBaseDir:              getEnv("VM_BASE_DIR", "/var/lib/vm-manager"),
+		EgressInterface:        getEnv("VM_EGRESS_INTERFACE", ""),
+		Concurrency:            getEnvInt("VM_MANAGER_CONCURRENCY", 4),
+		CommandTimeout:         time.Duration(getEnvInt("VM_COMMAND_TIMEOUT_SECONDS", 120)) * time.Second,
+		OperationRetryCount:    getEnvInt("VM_OPERATION_RETRY_COUNT", 3),
+		NetworkCleanupInterval: time.Duration(getEnvInt("VM_NETWORK_CLEANUP_INTERVAL_SECONDS", 300)) * time.Second,
 	}
 
 	if cfg.Concurrency < 1 {
@@ -32,6 +36,9 @@ func Load() (Config, error) {
 	}
 	if cfg.OperationRetryCount < 1 {
 		return Config{}, fmt.Errorf("VM_OPERATION_RETRY_COUNT must be >= 1")
+	}
+	if cfg.NetworkCleanupInterval < 0 {
+		return Config{}, fmt.Errorf("VM_NETWORK_CLEANUP_INTERVAL_SECONDS must be >= 0")
 	}
 	for _, p := range []string{cfg.VMBaseDir, filepath.Join(cfg.VMBaseDir, "instances"), filepath.Join(cfg.VMBaseDir, "images"), filepath.Join(cfg.VMBaseDir, "state")} {
 		if err := os.MkdirAll(p, 0o755); err != nil {

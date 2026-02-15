@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     total_disk_gib: int = 2000
 
     vm_command_timeout_seconds: int = 120
+    task_stale_queued_timeout_seconds: int = 180
+    task_stale_sweep_interval_seconds: int = 15
 
     auth_jwt_secret: str = "dev-change-me"
     auth_jwt_algorithm: str = "HS256"

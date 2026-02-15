@@ -24,6 +24,7 @@ This repository contains an MSA MVP with three services:
 - Deployment baseline:
   - `docker-compose` for `main-api`, `postgres`, `rabbitmq`
   - `vm-manager` runs with host-level privileges for QEMU/network operations.
+  - VM egress networking: `vm-manager` enables IPv4 forwarding and installs interface-scoped iptables NAT/forward rules for `172.30.0.0/16` using dedicated chains (`VM_MANAGER_FORWARD`, `VM_MANAGER_NAT`) with `vm-manager` comments.
 
 ## Security notice
 This is development/PoC only. VM root password is intentionally fixed to `1234` and must never be used in production.
@@ -33,6 +34,9 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 2. If host ports conflict, override exposed ports in `.env`:
    - `POSTGRES_EXPOSE_PORT`, `RABBITMQ_EXPOSE_PORT`, `RABBITMQ_MGMT_EXPOSE_PORT`
    - `MAIN_API_PORT`, `FRONTEND_PORT`
+   - Optional stale-task recovery: `TASK_STALE_QUEUED_TIMEOUT_SECONDS` (default `180`), `TASK_STALE_SWEEP_INTERVAL_SECONDS` (default `15`, set `0` to disable)
+   - Optional VM egress interface override: `VM_EGRESS_INTERFACE` (default route interface is auto-detected)
+   - Optional VM network cleanup interval: `VM_NETWORK_CLEANUP_INTERVAL_SECONDS` (default `300`, set `0` to disable)
 3. `docker compose up --build`
 4. Open:
    - Frontend: `http://localhost:3000` (or `FRONTEND_PORT`)

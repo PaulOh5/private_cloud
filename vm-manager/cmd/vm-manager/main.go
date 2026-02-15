@@ -27,6 +27,7 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	manager.StartNetworkJanitor(ctx)
 
 	log.Printf("vm-manager started with concurrency=%d", cfg.Concurrency)
 	if err := server.Run(ctx); err != nil && err != context.Canceled {

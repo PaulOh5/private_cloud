@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"vm-manager/internal/model"
@@ -96,6 +97,42 @@ func (s *StateStore) LoadRequestResult(requestID string) (model.CommandResponse,
 		return response, false, err
 	}
 	return response, true, nil
+}
+
+func (s *StateStore) ListInstances() ([]InstanceState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stateDir := filepath.Join(s.baseDir, "state")
+	entries, err := os.ReadDir(stateDir)
+	if os.IsNotExist(err) {
+		return []InstanceState{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]InstanceState, 0)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "instance-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+
+		raw, err := os.ReadFile(filepath.Join(stateDir, name))
+		if err != nil {
+			return nil, err
+		}
+		var st InstanceState
+		if err := json.Unmarshal(raw, &st); err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, nil
 }
 
 func writeJSONAtomic(path string, v any) error {

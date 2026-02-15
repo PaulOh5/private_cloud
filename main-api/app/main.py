@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 from app.adapters.postgres import PostgresUserRepository
 from app.adapters.rabbitmq_result_consumer import RabbitMqVmResultConsumer
 from app.adapters.rabbitmq_rpc import RabbitMqVmProvisioningAdapter
+from app.adapters.stale_task_monitor import StaleTaskMonitor
 from app.api.auth_routes import auth_router
 from app.api.audit_routes import audit_router
 from app.api.routes import instance_router, task_router
@@ -47,9 +48,13 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.result_consumer.start()
+        if app.state.stale_task_monitor is not None:
+            app.state.stale_task_monitor.start()
         try:
             yield
         finally:
+            if app.state.stale_task_monitor is not None:
+                app.state.stale_task_monitor.stop()
             app.state.result_consumer.stop()
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -93,6 +98,14 @@ def create_app() -> FastAPI:
     app.state.session_factory = session_factory
     app.state.vm_port = RabbitMqVmProvisioningAdapter(settings.rabbitmq_dsn)
     app.state.result_consumer = RabbitMqVmResultConsumer(settings.rabbitmq_dsn, session_factory)
+    if settings.task_stale_sweep_interval_seconds > 0:
+        app.state.stale_task_monitor = StaleTaskMonitor(
+            session_factory=session_factory,
+            queued_timeout_seconds=settings.task_stale_queued_timeout_seconds,
+            sweep_interval_seconds=settings.task_stale_sweep_interval_seconds,
+        )
+    else:
+        app.state.stale_task_monitor = None
 
     app.include_router(auth_router)
     app.include_router(audit_router)
