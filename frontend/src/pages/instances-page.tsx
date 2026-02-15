@@ -12,6 +12,7 @@ import {
   createInstance,
   deleteInstance,
   listInstances,
+  listVmImages,
   updateInstance,
   type CreateInstancePayload,
   type UpdateInstancePayload,
@@ -46,6 +47,7 @@ const instanceFormSchema = z.object({
   cpu: z.number().int().positive('CPU는 1 이상이어야 합니다.'),
   memory_mib: z.number().int().positive('메모리는 1 이상이어야 합니다.'),
   disk_gib: z.number().int().positive('디스크는 1 이상이어야 합니다.'),
+  image_id: z.string().max(64, '이미지 ID는 64자를 넘길 수 없습니다.').optional(),
 })
 
 type InstanceFormValues = z.infer<typeof instanceFormSchema>
@@ -113,6 +115,17 @@ export function InstancesPage() {
     return items.filter((item) => item.status !== 'deleted')
   }, [instancesQuery.data?.items, includeDeleted])
 
+  const vmImagesQuery = useQuery({
+    queryKey: ['vm-images'],
+    queryFn: listVmImages,
+    staleTime: 60_000,
+  })
+
+  const defaultImageId = useMemo(
+    () => vmImagesQuery.data?.find((item) => item.is_default)?.id ?? '',
+    [vmImagesQuery.data],
+  )
+
   const createForm = useForm<InstanceFormValues>({
     resolver: zodResolver(instanceFormSchema),
     defaultValues: {
@@ -120,6 +133,7 @@ export function InstancesPage() {
       cpu: 2,
       memory_mib: 2048,
       disk_gib: 20,
+      image_id: '',
     },
   })
 
@@ -144,12 +158,28 @@ export function InstancesPage() {
     })
   }, [updateTarget, updateForm])
 
+  useEffect(() => {
+    if (!createOpen) {
+      return
+    }
+    const currentImage = createForm.getValues('image_id')
+    if (!currentImage && defaultImageId) {
+      createForm.setValue('image_id', defaultImageId, { shouldValidate: true })
+    }
+  }, [createOpen, defaultImageId, createForm])
+
   const createMutation = useMutation({
     mutationFn: (payload: CreateInstancePayload) => createInstance(payload),
     onSuccess: (result) => {
       toast.success(`생성 요청이 등록되었습니다. task_id=${result.task_id}`)
       setCreateOpen(false)
-      createForm.reset()
+      createForm.reset({
+        name: '',
+        cpu: 2,
+        memory_mib: 2048,
+        disk_gib: 20,
+        image_id: defaultImageId,
+      })
       void queryClient.invalidateQueries({ queryKey: ['instances'] })
       void queryClient.invalidateQueries({ queryKey: ['tasks'] })
     },
@@ -191,6 +221,7 @@ export function InstancesPage() {
       cpu: value.cpu,
       memory_mib: value.memory_mib,
       disk_gib: value.disk_gib,
+      image_id: value.image_id || undefined,
     })
   })
 
@@ -410,6 +441,29 @@ export function InstancesPage() {
                   <p className="mt-1 text-xs text-destructive">{createForm.formState.errors.disk_gib.message}</p>
                 ) : null}
               </div>
+            </div>
+            <div>
+              <Label htmlFor="create-image">베이스 이미지</Label>
+              <Select id="create-image" {...createForm.register('image_id')}>
+                <option value="">기본 이미지 자동 선택</option>
+                {(vmImagesQuery.data ?? []).map((image) => (
+                  <option key={image.id} value={image.id}>
+                    {image.id}
+                    {image.is_default ? ' (default)' : ''}
+                  </option>
+                ))}
+              </Select>
+              {vmImagesQuery.isLoading ? (
+                <p className="mt-1 text-xs text-muted-foreground">이미지 카탈로그를 불러오는 중입니다.</p>
+              ) : null}
+              {vmImagesQuery.isError ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  이미지 목록 조회에 실패했습니다. 비워두면 서버 기본 이미지로 생성됩니다.
+                </p>
+              ) : null}
+              {createForm.formState.errors.image_id?.message ? (
+                <p className="mt-1 text-xs text-destructive">{createForm.formState.errors.image_id.message}</p>
+              ) : null}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>

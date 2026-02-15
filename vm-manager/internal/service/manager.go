@@ -19,22 +19,33 @@ import (
 )
 
 type Manager struct {
-	cfg       config.Config
-	store     *infra.StateStore
-	network   *infra.NetworkManager
-	cloudInit *infra.CloudInitBuilder
-	qemu      *infra.QemuManager
+	cfg          config.Config
+	imageCatalog *infra.ImageCatalog
+	store        *infra.StateStore
+	network      *infra.NetworkManager
+	cloudInit    *infra.CloudInitBuilder
+	qemu         *infra.QemuManager
 }
 
-func NewManager(cfg config.Config) *Manager {
+func NewManager(cfg config.Config) (*Manager, error) {
+	imageCatalog, err := infra.NewImageCatalog(infra.ImageCatalogOptions{
+		CatalogJSON:             cfg.ImageCatalogJSON,
+		DefaultID:               cfg.ImageDefaultID,
+		BaseImageURL:            cfg.BaseImageURL,
+		AllowInsecureNoChecksum: cfg.ImageAllowNoChecksum,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("invalid image catalog: %w", err)
+	}
 	runner := util.Runner{Timeout: cfg.CommandTimeout}
 	return &Manager{
-		cfg:       cfg,
-		store:     infra.NewStateStore(cfg.VMBaseDir),
-		network:   infra.NewNetworkManager(runner, cfg.EgressInterface),
-		cloudInit: infra.NewCloudInitBuilder(runner),
-		qemu:      infra.NewQemuManager(runner),
-	}
+		cfg:          cfg,
+		imageCatalog: imageCatalog,
+		store:        infra.NewStateStore(cfg.VMBaseDir),
+		network:      infra.NewNetworkManager(runner, cfg.EgressInterface),
+		cloudInit:    infra.NewCloudInitBuilder(runner),
+		qemu:         infra.NewQemuManager(runner),
+	}, nil
 }
 
 func (m *Manager) Handle(msg model.CommandMessage) (model.CommandResponse, int) {
@@ -99,6 +110,14 @@ func (m *Manager) dispatch(msg model.CommandMessage) (model.CommandResponse, err
 			return failure(msg.CorrelationID, "VALIDATION_ERROR", "invalid cancel payload"), err
 		}
 		return m.cancelVM(msg.CorrelationID, payload)
+	case "image.sync":
+		var payload model.ImageSyncPayload
+		if len(msg.Payload) > 0 {
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				return failure(msg.CorrelationID, "VALIDATION_ERROR", "invalid image sync payload"), err
+			}
+		}
+		return m.syncImages(msg.CorrelationID, payload)
 	default:
 		err := fmt.Errorf("unsupported command %s", msg.Command)
 		return failure(msg.CorrelationID, "VALIDATION_ERROR", err.Error()), err
@@ -126,9 +145,20 @@ func (m *Manager) createVM(correlationID string, payload model.CreatePayload) (m
 		return resp, err
 	}
 
-	baseImage, err := m.qemu.EnsureBaseImage(m.cfg.VMBaseDir, m.cfg.BaseImageURL)
+	imageRef, err := m.imageCatalog.Resolve(payload.ImageID)
 	if err != nil {
-		resp := failure(correlationID, "QEMU_ERROR", err.Error())
+		resp := failure(correlationID, "VALIDATION_ERROR", err.Error())
+		return resp, err
+	}
+
+	baseImage, err := m.qemu.EnsureBaseImage(m.cfg.VMBaseDir, imageRef)
+	if err != nil {
+		code := "QEMU_ERROR"
+		var imageErr *infra.ImageError
+		if errors.As(err, &imageErr) {
+			code = imageErr.Code
+		}
+		resp := failure(correlationID, code, err.Error())
 		return resp, err
 	}
 
@@ -327,6 +357,39 @@ func (m *Manager) cancelVM(correlationID string, payload model.CancelPayload) (m
 			"target_task_id": payload.TargetTaskID,
 			"target_command": payload.TargetCommand,
 			"reason":         payload.Reason,
+		},
+	}, nil
+}
+
+func (m *Manager) syncImages(correlationID string, _ model.ImageSyncPayload) (model.CommandResponse, error) {
+	entries := m.imageCatalog.Entries()
+	syncedItems := make([]map[string]any, 0, len(entries))
+
+	for _, entry := range entries {
+		path, err := m.qemu.EnsureBaseImage(m.cfg.VMBaseDir, entry)
+		if err != nil {
+			code := "QEMU_ERROR"
+			var imageErr *infra.ImageError
+			if errors.As(err, &imageErr) {
+				code = imageErr.Code
+			}
+			resp := failure(correlationID, code, fmt.Sprintf("sync image %s: %v", entry.ID, err))
+			return resp, err
+		}
+		syncedItems = append(syncedItems, map[string]any{
+			"id":   entry.ID,
+			"path": path,
+		})
+	}
+
+	return model.CommandResponse{
+		CorrelationID: correlationID,
+		Success:       true,
+		Result: map[string]any{
+			"status":             "synced",
+			"default_image_id":   m.imageCatalog.DefaultID(),
+			"total_images":       len(entries),
+			"synchronized_items": syncedItems,
 		},
 	}, nil
 }

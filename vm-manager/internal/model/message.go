@@ -18,6 +18,7 @@ type CreatePayload struct {
 	CPU        int     `json:"cpu"`
 	MemoryMiB  int     `json:"memory_mib"`
 	DiskGiB    int     `json:"disk_gib"`
+	ImageID    *string `json:"image_id"`
 	HostNode   string  `json:"host_node"`
 }
 
@@ -40,6 +41,8 @@ type CancelPayload struct {
 	TargetCommand string `json:"target_command"`
 	Reason        string `json:"reason"`
 }
+
+type ImageSyncPayload struct{}
 
 type CommandResponse struct {
 	CorrelationID string         `json:"correlation_id"`

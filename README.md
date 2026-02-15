@@ -40,6 +40,12 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
    - Optional stale-task recovery: `TASK_STALE_QUEUED_TIMEOUT_SECONDS` (default `180`), `TASK_STALE_SWEEP_INTERVAL_SECONDS` (default `15`, set `0` to disable)
    - Optional VM egress interface override: `VM_EGRESS_INTERFACE` (default route interface is auto-detected)
    - Optional VM network cleanup interval: `VM_NETWORK_CLEANUP_INTERVAL_SECONDS` (default `300`, set `0` to disable)
+   - Optional VM image catalog:
+     - `BASE_IMAGE_URL` keeps legacy single-image fallback
+     - If catalog env is empty, built-in defaults are available: `ubuntu-24.04` and `ubuntu-22.04`
+     - `VM_IMAGE_CATALOG_JSON` to configure multiple images (`id/url/sha256/format/is_default`)
+     - `VM_IMAGE_DEFAULT_ID` to force default image id
+     - `VM_IMAGE_ALLOW_INSECURE_NO_CHECKSUM` (default `false`)
 3. `docker compose up --build`
 4. Open:
    - Frontend: `http://localhost:3000` (or `FRONTEND_PORT`)
@@ -84,7 +90,10 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 - `DELETE /users/{id}` (admin, soft deactivate)
 - `GET /audit-logs` (admin)
 - `GET /audit-logs/{id}` (admin)
+- `GET /images` (viewer/operator/admin)
+- `POST /images/sync` (admin, sync/prefetch image cache)
 - `POST /instances` -> `202 + task_id`
+  - optional request field: `image_id` (if omitted, vm-manager default image is used)
 - `PUT /instances/{id}` -> `202 + task_id`
 - `DELETE /instances/{id}` -> `202 + task_id`
 - `GET /instances`
@@ -96,7 +105,7 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 - `POST /tasks/{id}/retry` -> `202 + new task_id`
 - `POST /tasks/{id}/cancel` -> `202 + cancel_pending|canceled`
 
-All `/instances` and `/tasks` endpoints require `Authorization: Bearer <token>`.
+All `/images`, `/instances`, and `/tasks` endpoints require `Authorization: Bearer <token>`.
 
 ## Web console notes (noVNC)
 - Designed for single-host `docker-compose` PoC.

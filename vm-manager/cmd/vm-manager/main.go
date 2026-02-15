@@ -18,7 +18,10 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	manager := service.NewManager(cfg)
+	manager, err := service.NewManager(cfg)
+	if err != nil {
+		log.Fatalf("create manager: %v", err)
+	}
 	server, err := rpc.New(cfg.RabbitMQURL, manager, cfg.Concurrency)
 	if err != nil {
 		log.Fatalf("create rpc server: %v", err)

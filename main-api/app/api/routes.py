@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from sqlalchemy.orm import Session
 
 from app.adapters.postgres import PostgresInstanceReadRepository, PostgresInstanceRepository, PostgresTaskRepository
+from app.adapters.rabbitmq_image_sync_rpc import VmImageSyncRpcError
 from app.adapters.resource_accounting import HostResourceAccountingAdapter
 from app.api.audit import write_audit_log
 from app.api.dependencies import advisory_lock, get_session, require_roles
@@ -15,10 +16,13 @@ from app.api.schemas import (
     CreateInstanceRequest,
     InstanceResponse,
     InstanceTaskAcceptedResponse,
+    SyncVmImagesResponse,
+    ListVmImagesResponse,
     ListInstancesResponse,
     ListTasksResponse,
     TaskResponse,
     UpdateInstanceRequest,
+    VmImageResponse,
 )
 from app.application.commands.create_instance import CreateInstanceCommand, CreateInstanceHandler
 from app.application.commands.cancel_task import CancelTaskCommand, CancelTaskHandler
@@ -36,6 +40,8 @@ from app.domain.errors import DomainError
 
 instance_router = APIRouter(prefix="/instances", tags=["instances"])
 task_router = APIRouter(prefix="/tasks", tags=["tasks"])
+image_router = APIRouter(prefix="/images", tags=["images"])
+legacy_image_router = APIRouter(prefix="/image", tags=["images"])
 logger = logging.getLogger(__name__)
 
 
@@ -74,6 +80,57 @@ def to_task_response(task) -> TaskResponse:
     )
 
 
+@image_router.get("", response_model=ListVmImagesResponse)
+def list_images(
+    request: Request,
+    _=Depends(require_roles("viewer", "operator", "admin")),
+):
+    catalog = request.app.state.vm_image_catalog
+    return ListVmImagesResponse(
+        items=[
+            VmImageResponse(
+                id=entry.id,
+                url=entry.url,
+                format=entry.image_format,
+                is_default=entry.id == catalog.default_id,
+                has_checksum=bool(entry.sha256),
+                description=entry.description,
+            )
+            for entry in catalog.entries
+        ]
+    )
+
+
+def _sync_images_impl(request: Request) -> SyncVmImagesResponse:
+    try:
+        result = request.app.state.vm_image_sync_port.sync_images()
+    except VmImageSyncRpcError as exc:
+        status_code = 502
+        if exc.code == "VALIDATION_ERROR":
+            status_code = 400
+        elif exc.code == "TIMEOUT":
+            status_code = 504
+        raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+    return SyncVmImagesResponse.model_validate(result)
+
+
+@image_router.post("/sync", response_model=SyncVmImagesResponse)
+def sync_images(
+    request: Request,
+    _=Depends(require_roles("admin")),
+):
+    return _sync_images_impl(request)
+
+
+@legacy_image_router.post("/sync", response_model=SyncVmImagesResponse, include_in_schema=False)
+def sync_images_legacy_alias(
+    request: Request,
+    _=Depends(require_roles("admin")),
+):
+    return _sync_images_impl(request)
+
+
 @instance_router.post("", response_model=InstanceTaskAcceptedResponse, status_code=202)
 def create_instance(
     body: CreateInstanceRequest,
@@ -96,6 +153,7 @@ def create_instance(
             memory_mib=body.memory_mib,
             disk_gib=body.disk_gib,
             host_node=settings.host_node,
+            image_id=body.image_id,
         )
     )
     write_audit_log(

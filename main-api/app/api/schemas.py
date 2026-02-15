@@ -9,6 +9,7 @@ class CreateInstanceRequest(BaseModel):
     cpu: int = Field(gt=0)
     memory_mib: int = Field(gt=0)
     disk_gib: int = Field(gt=0)
+    image_id: str | None = Field(default=None, max_length=64, pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 class UpdateInstanceRequest(BaseModel):
@@ -35,6 +36,31 @@ class ListInstancesResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class VmImageResponse(BaseModel):
+    id: str
+    url: str
+    format: str
+    is_default: bool
+    has_checksum: bool
+    description: str | None = None
+
+
+class ListVmImagesResponse(BaseModel):
+    items: list[VmImageResponse]
+
+
+class SyncVmImagesResponseItem(BaseModel):
+    id: str
+    path: str
+
+
+class SyncVmImagesResponse(BaseModel):
+    status: str
+    default_image_id: str
+    total_images: int
+    synchronized_items: list[SyncVmImagesResponseItem]
 
 
 class InstanceTaskAcceptedResponse(BaseModel):

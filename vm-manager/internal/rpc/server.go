@@ -75,7 +75,7 @@ func declareTopology(ch *amqp.Channel) error {
 	}); err != nil {
 		return err
 	}
-	for _, key := range []string{"instance.create", "instance.update", "instance.delete", "instance.cancel"} {
+	for _, key := range []string{"instance.create", "instance.update", "instance.delete", "instance.cancel", "image.sync"} {
 		if err := ch.QueueBind(commandQueue, key, commandExchange, false, nil); err != nil {
 			return err
 		}
@@ -166,8 +166,9 @@ func (s *Server) handleDelivery(msg amqp.Delivery) {
 		cmd.CorrelationID = msg.CorrelationId
 	}
 
+	publishTaskEvents := strings.HasPrefix(cmd.Command, "instance.")
 	normalized := normalizeCommand(cmd.Command)
-	if normalized != "cancel" {
+	if publishTaskEvents && normalized != "cancel" {
 		runningEvent := model.ResultEvent{
 			EventID:      uuid.NewString(),
 			TaskID:       cmd.TaskID,
@@ -188,27 +189,29 @@ func (s *Server) handleDelivery(msg amqp.Delivery) {
 		response.CorrelationID = msg.CorrelationId
 	}
 
-	finalStatus := "failed"
-	if response.Success && normalized == "cancel" {
-		finalStatus = "canceled"
-	} else if response.Success {
-		finalStatus = "succeeded"
-	}
-	finalEvent := model.ResultEvent{
-		EventID:      uuid.NewString(),
-		TaskID:       cmd.TaskID,
-		RequestID:    cmd.RequestID,
-		InstanceID:   cmd.InstanceID,
-		Command:      normalized,
-		Status:       finalStatus,
-		ErrorCode:    response.ErrorCode,
-		ErrorMessage: response.ErrorMessage,
-		Result:       response.Result,
-		AttemptCount: attemptCount,
-		Timestamp:    nowISO(),
-	}
-	if err := s.publishResultEvent(finalEvent); err != nil {
-		log.Printf("failed to publish final result event: %v", err)
+	if publishTaskEvents {
+		finalStatus := "failed"
+		if response.Success && normalized == "cancel" {
+			finalStatus = "canceled"
+		} else if response.Success {
+			finalStatus = "succeeded"
+		}
+		finalEvent := model.ResultEvent{
+			EventID:      uuid.NewString(),
+			TaskID:       cmd.TaskID,
+			RequestID:    cmd.RequestID,
+			InstanceID:   cmd.InstanceID,
+			Command:      normalized,
+			Status:       finalStatus,
+			ErrorCode:    response.ErrorCode,
+			ErrorMessage: response.ErrorMessage,
+			Result:       response.Result,
+			AttemptCount: attemptCount,
+			Timestamp:    nowISO(),
+		}
+		if err := s.publishResultEvent(finalEvent); err != nil {
+			log.Printf("failed to publish final result event: %v", err)
+		}
 	}
 
 	if msg.ReplyTo != "" {

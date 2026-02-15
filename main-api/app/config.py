@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     vm_command_timeout_seconds: int = 120
     task_stale_queued_timeout_seconds: int = 180
     task_stale_sweep_interval_seconds: int = 15
+    base_image_url: str = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    vm_image_catalog_json: str = ""
+    vm_image_default_id: str = ""
+    vm_image_allow_insecure_no_checksum: bool = False
     console_ticket_ttl_seconds: int = 300
     console_proxy_host: str = "host.docker.internal"
     console_vnc_port_base: int = 20000
