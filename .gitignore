@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.vscode/
 *.log
 main-api/.mypy_cache/
 main-api/.ruff_cache/
