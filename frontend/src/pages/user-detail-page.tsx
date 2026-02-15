@@ -59,6 +59,9 @@ export function UserDetailPage() {
               <strong>역할:</strong> {userQuery.data.role}
             </p>
             <p>
+              <strong>tenant_id:</strong> <span className="font-mono">{userQuery.data.tenant_id || '-'}</span>
+            </p>
+            <p>
               <strong>활성 상태:</strong>{' '}
               <Badge tone={userQuery.data.is_active ? 'success' : 'neutral'}>
                 {userQuery.data.is_active ? 'active' : 'inactive'}

@@ -41,6 +41,7 @@ def write_audit_log(
     target_id: str | None,
     actor_user: User | None = None,
     actor_username: str | None = None,
+    tenant_id: UUID | None = None,
     metadata: dict | None = None,
 ) -> None:
     ip_address = _parse_ip_address(request)
@@ -48,6 +49,7 @@ def write_audit_log(
     PostgresAuditLogRepository(session).create(
         actor_user_id=actor_user.id if actor_user else None,
         actor_username=actor_username or (actor_user.username if actor_user else None),
+        tenant_id=tenant_id if tenant_id is not None else (actor_user.tenant_id if actor_user else None),
         action=action,
         target_type=target_type,
         target_id=target_id,

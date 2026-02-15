@@ -1,4 +1,4 @@
-import { LogOut, Menu, Server, ShieldCheck, SquareUserRound, Workflow } from 'lucide-react'
+import { Building2, LogOut, Menu, Server, ShieldCheck, SquareUserRound, Workflow } from 'lucide-react'
 import { type ComponentType, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
@@ -18,6 +18,7 @@ const navItems: NavItem[] = [
   { to: '/instances', label: '인스턴스', icon: Server, roles: ['admin', 'operator', 'viewer'] },
   { to: '/tasks', label: '작업 이력', icon: Workflow, roles: ['admin', 'operator', 'viewer'] },
   { to: '/users', label: '사용자 관리', icon: SquareUserRound, roles: ['admin'] },
+  { to: '/tenants', label: 'Tenant 관리', icon: Building2, roles: ['admin'] },
   { to: '/audit-logs', label: '감사 로그', icon: ShieldCheck, roles: ['admin'] },
 ]
 
@@ -91,6 +92,7 @@ export function ConsoleLayout() {
                 <div className="text-right">
                   <p className="text-sm font-semibold leading-none">{user?.username}</p>
                   <p className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">{user?.role}</p>
+                  {user?.tenant_id ? <p className="mt-1 font-mono text-[10px] text-muted-foreground">{user.tenant_id}</p> : null}
                 </div>
                 <Button variant="ghost" size="icon" onClick={onLogout}>
                   <LogOut className="h-4 w-4" />

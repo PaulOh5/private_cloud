@@ -17,10 +17,11 @@ import {
   type CreateInstancePayload,
   type UpdateInstancePayload,
 } from '@/features/instances/api'
+import { listTenants } from '@/features/tenants/api'
 import { resolveErrorMessage } from '@/shared/lib/error'
 import { toOffset } from '@/shared/lib/pagination'
 import { instanceStatusLabel, statusTone } from '@/shared/lib/status'
-import type { Instance } from '@/types/api'
+import type { Instance, Tenant } from '@/types/api'
 import { formatDateTime } from '@/shared/lib/date'
 import { Badge } from '@/shared/ui/badge'
 import { Button } from '@/shared/ui/button'
@@ -43,6 +44,7 @@ import { Spinner } from '@/shared/ui/spinner'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 
 const instanceFormSchema = z.object({
+  tenant_id: z.string().uuid('유효한 tenant_id를 입력하세요.').optional().or(z.literal('')),
   name: z.string().max(128, '이름은 128자를 넘길 수 없습니다.').optional(),
   cpu: z.number().int().positive('CPU는 1 이상이어야 합니다.'),
   memory_mib: z.number().int().positive('메모리는 1 이상이어야 합니다.'),
@@ -72,10 +74,12 @@ export function InstancesPage() {
   const queryClient = useQueryClient()
   const { hasAnyRole } = useAuth()
   const canManage = hasAnyRole('admin', 'operator')
+  const isAdmin = hasAnyRole('admin')
 
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState('')
   const [nameFilter, setNameFilter] = useState('')
+  const [tenantFilter, setTenantFilter] = useState('')
   const [includeDeleted, setIncludeDeleted] = useState(false)
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -89,8 +93,9 @@ export function InstancesPage() {
       offset: toOffset(page, pageSize),
       status: statusFilter || undefined,
       name: nameFilter || undefined,
+      tenant_id: isAdmin ? tenantFilter || undefined : undefined,
     }),
-    [page, statusFilter, nameFilter],
+    [page, statusFilter, nameFilter, isAdmin, tenantFilter],
   )
 
   const instancesQuery = useQuery({
@@ -106,6 +111,15 @@ export function InstancesPage() {
       return payload.items.some((item) => item.status.endsWith('_pending')) ? 5000 : false
     },
   })
+
+  const tenantsQuery = useQuery({
+    queryKey: ['tenants', 'instance-page-selector'],
+    queryFn: () => listTenants({ limit: 200, offset: 0 }),
+    enabled: isAdmin,
+    staleTime: 60_000,
+  })
+
+  const tenantOptions = useMemo<Tenant[]>(() => tenantsQuery.data?.items ?? [], [tenantsQuery.data?.items])
 
   const visibleItems = useMemo(() => {
     const items = instancesQuery.data?.items ?? []
@@ -129,6 +143,7 @@ export function InstancesPage() {
   const createForm = useForm<InstanceFormValues>({
     resolver: zodResolver(instanceFormSchema),
     defaultValues: {
+      tenant_id: '',
       name: '',
       cpu: 2,
       memory_mib: 2048,
@@ -166,7 +181,16 @@ export function InstancesPage() {
     if (!currentImage && defaultImageId) {
       createForm.setValue('image_id', defaultImageId, { shouldValidate: true })
     }
-  }, [createOpen, defaultImageId, createForm])
+    if (isAdmin) {
+      const currentTenant = createForm.getValues('tenant_id')
+      if (!currentTenant) {
+        const fallbackTenant = tenantFilter || tenantOptions[0]?.id || ''
+        if (fallbackTenant) {
+          createForm.setValue('tenant_id', fallbackTenant, { shouldValidate: true })
+        }
+      }
+    }
+  }, [createOpen, defaultImageId, createForm, isAdmin, tenantFilter, tenantOptions])
 
   const createMutation = useMutation({
     mutationFn: (payload: CreateInstancePayload) => createInstance(payload),
@@ -174,6 +198,7 @@ export function InstancesPage() {
       toast.success(`생성 요청이 등록되었습니다. task_id=${result.task_id}`)
       setCreateOpen(false)
       createForm.reset({
+        tenant_id: isAdmin ? tenantFilter || tenantOptions[0]?.id || '' : '',
         name: '',
         cpu: 2,
         memory_mib: 2048,
@@ -216,7 +241,12 @@ export function InstancesPage() {
   })
 
   const onCreate = createForm.handleSubmit((value) => {
+    if (isAdmin && !value.tenant_id) {
+      toast.error('admin은 tenant_id를 선택해야 합니다.')
+      return
+    }
     createMutation.mutate({
+      tenant_id: isAdmin ? value.tenant_id || undefined : undefined,
       name: value.name || undefined,
       cpu: value.cpu,
       memory_mib: value.memory_mib,
@@ -276,7 +306,7 @@ export function InstancesPage() {
           <CardDescription>status/name 조건으로 목록을 조회합니다.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
             <div>
               <Label htmlFor="status-filter">상태</Label>
               <Select id="status-filter" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
@@ -296,6 +326,19 @@ export function InstancesPage() {
                 onChange={(event) => setNameFilter(event.target.value)}
               />
             </div>
+            {isAdmin ? (
+              <div>
+                <Label htmlFor="tenant-filter">Tenant</Label>
+                <Select id="tenant-filter" value={tenantFilter} onChange={(event) => setTenantFilter(event.target.value)}>
+                  <option value="">전체 Tenant</option>
+                  {tenantOptions.map((tenant) => (
+                    <option key={tenant.id} value={tenant.id}>
+                      {tenant.name} ({tenant.key})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            ) : null}
             <div className="flex items-end">
               <Button
                 className="w-full"
@@ -341,6 +384,7 @@ export function InstancesPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>ID</TableHead>
+                      {isAdmin ? <TableHead>Tenant</TableHead> : null}
                       <TableHead>이름</TableHead>
                       <TableHead>스펙</TableHead>
                       <TableHead>상태</TableHead>
@@ -353,6 +397,7 @@ export function InstancesPage() {
                     {visibleItems.map((item) => (
                       <TableRow key={item.id}>
                         <TableCell className="font-mono text-xs">{item.id}</TableCell>
+                        {isAdmin ? <TableCell className="font-mono text-xs">{item.tenant_id}</TableCell> : null}
                         <TableCell>{item.name || '-'}</TableCell>
                         <TableCell>{item.cpu} vCPU / {item.memory_mib} MiB / {item.disk_gib} GiB</TableCell>
                         <TableCell>
@@ -404,6 +449,22 @@ export function InstancesPage() {
             <DialogDescription>요청이 수락되면 비동기 작업(task)이 큐에 등록됩니다.</DialogDescription>
           </DialogHeader>
           <form className="space-y-3" onSubmit={onCreate}>
+            {isAdmin ? (
+              <div>
+                <Label htmlFor="create-tenant">Tenant</Label>
+                <Select id="create-tenant" {...createForm.register('tenant_id')}>
+                  <option value="">Tenant 선택</option>
+                  {tenantOptions.map((tenant) => (
+                    <option key={tenant.id} value={tenant.id}>
+                      {tenant.name} ({tenant.key})
+                    </option>
+                  ))}
+                </Select>
+                {createForm.formState.errors.tenant_id?.message ? (
+                  <p className="mt-1 text-xs text-destructive">{createForm.formState.errors.tenant_id.message}</p>
+                ) : null}
+              </div>
+            ) : null}
             <div>
               <Label htmlFor="create-name">이름</Label>
               <Input id="create-name" placeholder="선택 입력" {...createForm.register('name')} />

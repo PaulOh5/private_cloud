@@ -22,6 +22,7 @@ export interface PaginationResponse<T> {
 export interface Instance {
   id: string
   name: string | null
+  tenant_id: string
   cpu: number
   memory_mib: number
   disk_gib: number
@@ -89,6 +90,7 @@ export interface CurrentUser {
   id: string
   username: string
   role: Role
+  tenant_id: string | null
   is_active: boolean
 }
 
@@ -108,6 +110,7 @@ export interface User {
   id: string
   username: string
   role: Role
+  tenant_id: string | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -117,17 +120,20 @@ export interface CreateUserRequest {
   username: string
   password: string
   role: Role
+  tenant_id?: string | null
   is_active: boolean
 }
 
 export interface UpdateUserRequest {
   role?: Role
+  tenant_id?: string | null
   is_active?: boolean
   password?: string
 }
 
 export interface AuditLog {
   id: string
+  tenant_id: string | null
   actor_user_id: string | null
   actor_username: string | null
   action: string
@@ -147,4 +153,31 @@ export interface FastApiError {
 export interface DomainError {
   code: string
   message: string
+}
+
+export interface TenantQuota {
+  tenant_id: string
+  max_instances: number
+  max_cpu: number
+  max_memory_mib: number
+  max_disk_gib: number
+  updated_at: string
+}
+
+export interface Tenant {
+  id: string
+  key: string
+  name: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
+  quota: TenantQuota | null
+}
+
+export interface TenantUsage {
+  tenant_id: string
+  used_instances: number
+  used_cpu: number
+  used_memory_mib: number
+  used_disk_gib: number
 }

@@ -7,6 +7,7 @@ export interface ListTasksParams {
   status?: string
   instance_id?: string
   command?: string
+  tenant_id?: string
 }
 
 export async function listTasks(params: ListTasksParams): Promise<PaginationResponse<Task>> {

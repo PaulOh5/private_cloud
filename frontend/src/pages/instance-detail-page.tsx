@@ -59,8 +59,6 @@ export function InstanceDetailPage() {
 
   useEffect(() => {
     closeConsoleSession()
-    setConsoleState('idle')
-    setConsoleMessage('연결 버튼을 눌러 웹 콘솔을 시작하세요.')
   }, [instanceId, closeConsoleSession])
 
   const instanceQuery = useQuery({
@@ -106,6 +104,8 @@ export function InstanceDetailPage() {
     }
     return null
   }, [canUseConsole, instanceQuery.data])
+
+  const canDisconnectConsole = consoleState === 'connected' || consoleState === 'connecting'
 
   const onConnectConsole = async () => {
     if (!instanceId || !canUseConsole || !instanceQuery.data || instanceQuery.data.status !== 'running') {
@@ -206,6 +206,9 @@ export function InstanceDetailPage() {
                 <strong>IP:</strong> {instanceQuery.data.ip_address || '-'}
               </p>
               <p>
+                <strong>tenant_id:</strong> <span className="font-mono">{instanceQuery.data.tenant_id}</span>
+              </p>
+              <p>
                 <strong>스펙:</strong> {instanceQuery.data.cpu} vCPU / {instanceQuery.data.memory_mib} MiB / {instanceQuery.data.disk_gib} GiB
               </p>
               <p>
@@ -232,7 +235,7 @@ export function InstanceDetailPage() {
                 >
                   {consoleState === 'connecting' ? '연결 중...' : '콘솔 연결'}
                 </Button>
-                <Button variant="outline" onClick={onDisconnectConsole} disabled={!rfbRef.current}>
+                <Button variant="outline" onClick={onDisconnectConsole} disabled={!canDisconnectConsole}>
                   연결 종료
                 </Button>
                 <Badge tone={consoleState === 'error' ? 'danger' : consoleState === 'connected' ? 'success' : 'neutral'}>

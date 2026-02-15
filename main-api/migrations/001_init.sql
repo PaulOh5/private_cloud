@@ -1,7 +1,40 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+CREATE TABLE IF NOT EXISTS tenants (
+    id UUID PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+INSERT INTO tenants (id, key, name, is_active, created_at, updated_at)
+VALUES (
+    '00000000-0000-0000-0000-000000000001',
+    'default',
+    'Default Tenant',
+    true,
+    NOW(),
+    NOW()
+)
+ON CONFLICT (key) DO UPDATE
+SET
+    name = EXCLUDED.name,
+    updated_at = NOW();
+
+CREATE TABLE IF NOT EXISTS tenant_quotas (
+    tenant_id UUID PRIMARY KEY REFERENCES tenants (id) ON DELETE CASCADE,
+    max_instances INT NOT NULL,
+    max_cpu INT NOT NULL,
+    max_memory_mib INT NOT NULL,
+    max_disk_gib INT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS instances (
     id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants (id),
     name TEXT NULL,
     cpu INT NOT NULL,
     memory_mib INT NOT NULL,
@@ -16,9 +49,31 @@ CREATE TABLE IF NOT EXISTS instances (
     updated_at TIMESTAMPTZ NOT NULL
 );
 
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS tenant_id UUID NULL;
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS reserve_resources BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS last_task_id UUID NULL;
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ NULL;
+
+UPDATE instances
+SET tenant_id = '00000000-0000-0000-0000-000000000001'
+WHERE tenant_id IS NULL;
+
+ALTER TABLE instances
+    ALTER COLUMN tenant_id SET NOT NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'instances_tenant_id_fkey'
+    ) THEN
+        ALTER TABLE instances
+            ADD CONSTRAINT instances_tenant_id_fkey
+            FOREIGN KEY (tenant_id)
+            REFERENCES tenants (id);
+    END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -46,6 +101,8 @@ BEGIN
             ));
     END IF;
 END $$;
+
+CREATE INDEX IF NOT EXISTS instances_tenant_id_idx ON instances (tenant_id);
 
 CREATE TABLE IF NOT EXISTS resource_capacity (
     host_node TEXT PRIMARY KEY,
@@ -108,12 +165,54 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'operator', 'viewer')),
+    tenant_id UUID NULL REFERENCES tenants (id),
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id UUID NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'users_tenant_id_fkey'
+    ) THEN
+        ALTER TABLE users
+            ADD CONSTRAINT users_tenant_id_fkey
+            FOREIGN KEY (tenant_id)
+            REFERENCES tenants (id);
+    END IF;
+END $$;
+
+UPDATE users
+SET tenant_id = NULL
+WHERE role = 'admin';
+
+UPDATE users
+SET tenant_id = '00000000-0000-0000-0000-000000000001'
+WHERE role IN ('operator', 'viewer') AND tenant_id IS NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'users_tenant_role_check'
+    ) THEN
+        ALTER TABLE users
+            ADD CONSTRAINT users_tenant_role_check
+            CHECK (
+                (role = 'admin' AND tenant_id IS NULL)
+                OR (role IN ('operator', 'viewer') AND tenant_id IS NOT NULL)
+            );
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS users_role_idx ON users (role);
+CREATE INDEX IF NOT EXISTS users_tenant_id_idx ON users (tenant_id);
 
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     id UUID PRIMARY KEY,
@@ -130,6 +229,7 @@ CREATE INDEX IF NOT EXISTS refresh_tokens_expires_at_idx ON refresh_tokens (expi
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id UUID PRIMARY KEY,
+    tenant_id UUID NULL REFERENCES tenants (id),
     actor_user_id UUID NULL REFERENCES users (id) ON DELETE SET NULL,
     actor_username TEXT NULL,
     action TEXT NOT NULL,
@@ -142,11 +242,28 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS tenant_id UUID NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'audit_logs_tenant_id_fkey'
+    ) THEN
+        ALTER TABLE audit_logs
+            ADD CONSTRAINT audit_logs_tenant_id_fkey
+            FOREIGN KEY (tenant_id)
+            REFERENCES tenants (id);
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS audit_logs_created_at_idx ON audit_logs (created_at DESC);
 CREATE INDEX IF NOT EXISTS audit_logs_actor_user_id_idx ON audit_logs (actor_user_id);
 CREATE INDEX IF NOT EXISTS audit_logs_action_idx ON audit_logs (action);
 CREATE INDEX IF NOT EXISTS audit_logs_target_type_idx ON audit_logs (target_type);
 CREATE INDEX IF NOT EXISTS audit_logs_request_id_idx ON audit_logs (request_id);
+CREATE INDEX IF NOT EXISTS audit_logs_tenant_id_idx ON audit_logs (tenant_id);
 
 CREATE OR REPLACE VIEW resource_reservations_view AS
 SELECT
@@ -158,3 +275,13 @@ FROM instances
 WHERE reserve_resources = true
   AND status <> 'deleted'
 GROUP BY host_node;
+
+CREATE OR REPLACE VIEW tenant_resource_usage_view AS
+SELECT
+    tenant_id,
+    COUNT(*) FILTER (WHERE reserve_resources = true AND status <> 'deleted') AS used_instances,
+    COALESCE(SUM(cpu) FILTER (WHERE reserve_resources = true AND status <> 'deleted'), 0) AS used_cpu,
+    COALESCE(SUM(memory_mib) FILTER (WHERE reserve_resources = true AND status <> 'deleted'), 0) AS used_memory_mib,
+    COALESCE(SUM(disk_gib) FILTER (WHERE reserve_resources = true AND status <> 'deleted'), 0) AS used_disk_gib
+FROM instances
+GROUP BY tenant_id;

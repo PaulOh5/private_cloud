@@ -49,6 +49,9 @@ export function AuditLogDetailPage() {
                 <strong>actor_user_id:</strong> {logQuery.data.actor_user_id || '-'}
               </p>
               <p>
+                <strong>tenant_id:</strong> {logQuery.data.tenant_id || '-'}
+              </p>
+              <p>
                 <strong>actor_username:</strong> {logQuery.data.actor_username || '-'}
               </p>
               <p>

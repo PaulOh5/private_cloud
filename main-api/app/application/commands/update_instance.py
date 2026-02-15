@@ -12,6 +12,8 @@ from app.ports.interfaces import (
     InstanceRepository,
     ResourceAccountingPort,
     TaskRepository,
+    TenantQuotaAccountingPort,
+    TenantQuotaCheckInput,
     VmProvisioningPort,
 )
 
@@ -32,11 +34,13 @@ class UpdateInstanceHandler:
         task_repository: TaskRepository,
         provisioning: VmProvisioningPort,
         accounting: ResourceAccountingPort,
+        quota_accounting: TenantQuotaAccountingPort | None = None,
     ):
         self.write_repository = write_repository
         self.task_repository = task_repository
         self.provisioning = provisioning
         self.accounting = accounting
+        self.quota_accounting = quota_accounting
 
     def handle(self, command: UpdateInstanceCommand) -> TaskAccepted:
         instance = self.write_repository.get_for_update(command.instance_id)
@@ -49,6 +53,17 @@ class UpdateInstanceHandler:
 
         next_spec = ResourceSpec(cpu=command.cpu, memory_mib=command.memory_mib, disk_gib=command.disk_gib)
         next_spec.validate()
+
+        if self.quota_accounting is not None:
+            self.quota_accounting.assert_quota(
+                TenantQuotaCheckInput(
+                    tenant_id=instance.tenant_id,
+                    current=instance.resource_spec,
+                    requested=next_spec,
+                    current_reserved=instance.reserve_resources,
+                    requested_reserved=True,
+                )
+            )
 
         self.accounting.assert_capacity(
             CapacityCheckInput(host_node=command.host_node, current=instance.resource_spec, requested=next_spec)
@@ -79,6 +94,7 @@ class UpdateInstanceHandler:
                 "memory_mib": next_spec.memory_mib,
                 "disk_gib": next_spec.disk_gib,
                 "host_node": command.host_node,
+                "tenant_id": str(instance.tenant_id),
                 "previous_spec": {
                     "cpu": instance.resource_spec.cpu,
                     "memory_mib": instance.resource_spec.memory_mib,

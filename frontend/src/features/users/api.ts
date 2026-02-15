@@ -13,6 +13,7 @@ export interface ListUsersParams {
   role?: string
   is_active?: boolean
   username?: string
+  tenant_id?: string
 }
 
 export async function listRoles(): Promise<RolesResponse> {

@@ -3,6 +3,8 @@ import { Eye, RefreshCcw } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import { useAuth } from '@/features/auth/auth-context'
+import { listTenants } from '@/features/tenants/api'
 import { listTasks } from '@/features/tasks/api'
 import { formatDateTime } from '@/shared/lib/date'
 import { resolveErrorMessage } from '@/shared/lib/error'
@@ -24,10 +26,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 const pageSize = 20
 
 export function TasksPage() {
+  const { hasAnyRole } = useAuth()
+  const isAdmin = hasAnyRole('admin')
+
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState('')
   const [instanceIdFilter, setInstanceIdFilter] = useState('')
   const [commandFilter, setCommandFilter] = useState('')
+  const [tenantFilter, setTenantFilter] = useState('')
 
   const params = useMemo(
     () => ({
@@ -36,8 +42,9 @@ export function TasksPage() {
       status: statusFilter || undefined,
       instance_id: instanceIdFilter || undefined,
       command: commandFilter || undefined,
+      tenant_id: isAdmin ? tenantFilter || undefined : undefined,
     }),
-    [page, statusFilter, instanceIdFilter, commandFilter],
+    [page, statusFilter, instanceIdFilter, commandFilter, isAdmin, tenantFilter],
   )
 
   const tasksQuery = useQuery({
@@ -56,6 +63,13 @@ export function TasksPage() {
         ? 5000
         : false
     },
+  })
+
+  const tenantsQuery = useQuery({
+    queryKey: ['tenants', 'task-page-selector'],
+    queryFn: () => listTenants({ limit: 200, offset: 0 }),
+    enabled: isAdmin,
+    staleTime: 60_000,
   })
 
   return (
@@ -77,7 +91,7 @@ export function TasksPage() {
           <CardDescription>status, instance_id, command 로 검색할 수 있습니다.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
             <div>
               <Label htmlFor="task-status">상태</Label>
               <Select id="task-status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
@@ -108,6 +122,19 @@ export function TasksPage() {
                 <option value="delete">delete</option>
               </Select>
             </div>
+            {isAdmin ? (
+              <div>
+                <Label htmlFor="task-tenant">Tenant</Label>
+                <Select id="task-tenant" value={tenantFilter} onChange={(event) => setTenantFilter(event.target.value)}>
+                  <option value="">전체 Tenant</option>
+                  {(tenantsQuery.data?.items ?? []).map((tenant) => (
+                    <option key={tenant.id} value={tenant.id}>
+                      {tenant.name} ({tenant.key})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            ) : null}
             <div className="flex items-end">
               <Button
                 className="w-full"
@@ -143,6 +170,7 @@ export function TasksPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>ID</TableHead>
+                      {isAdmin ? <TableHead>Tenant</TableHead> : null}
                       <TableHead>인스턴스</TableHead>
                       <TableHead>명령</TableHead>
                       <TableHead>상태</TableHead>
@@ -155,6 +183,11 @@ export function TasksPage() {
                     {tasksQuery.data.items.map((task) => (
                       <TableRow key={task.id}>
                         <TableCell className="font-mono text-xs">{task.id}</TableCell>
+                        {isAdmin ? (
+                          <TableCell className="font-mono text-xs">
+                            {typeof task.request_payload.tenant_id === 'string' ? task.request_payload.tenant_id : '-'}
+                          </TableCell>
+                        ) : null}
                         <TableCell>
                           <Link to={`/instances/${task.instance_id}`} className="font-mono text-xs text-primary hover:underline">
                             {task.instance_id}

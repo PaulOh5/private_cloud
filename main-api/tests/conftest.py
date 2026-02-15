@@ -87,7 +87,7 @@ class InMemoryTaskRepo:
     def get_for_update(self, task_id: UUID) -> InstanceTask | None:
         return self.tasks.get(task_id)
 
-    def list(self, limit: int, offset: int, status, instance_id, command):
+    def list(self, limit: int, offset: int, status, instance_id, command, tenant_id=None):
         items = list(self.tasks.values())
         if status:
             items = [t for t in items if t.status == status]

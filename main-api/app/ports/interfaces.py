@@ -7,7 +7,17 @@ from typing import Protocol
 from uuid import UUID
 
 from app.domain.auth import RefreshToken, Role, User
-from app.domain.models import AuditLog, Instance, InstanceTask, ResourceSpec, TaskCommand, TaskStatus
+from app.domain.models import (
+    AuditLog,
+    Instance,
+    InstanceTask,
+    ResourceSpec,
+    TaskCommand,
+    TaskStatus,
+    Tenant,
+    TenantQuota,
+    TenantUsage,
+)
 
 
 class InstanceRepository(ABC):
@@ -47,11 +57,18 @@ class InstanceRepository(ABC):
 
 class InstanceReadRepository(ABC):
     @abstractmethod
-    def get(self, instance_id: UUID) -> Instance | None:
+    def get(self, instance_id: UUID, tenant_id: UUID | None = None) -> Instance | None:
         raise NotImplementedError
 
     @abstractmethod
-    def list(self, limit: int, offset: int, status: str | None, name: str | None) -> tuple[list[Instance], int]:
+    def list(
+        self,
+        limit: int,
+        offset: int,
+        status: str | None,
+        name: str | None,
+        tenant_id: UUID | None = None,
+    ) -> tuple[list[Instance], int]:
         raise NotImplementedError
 
 
@@ -80,6 +97,7 @@ class TaskRepository(ABC):
         status: TaskStatus | None,
         instance_id: UUID | None,
         command: TaskCommand | None,
+        tenant_id: UUID | None = None,
     ) -> tuple[list[InstanceTask], int]:
         raise NotImplementedError
 
@@ -148,11 +166,18 @@ class UserRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def ensure_user(self, username: str, password_hash: str, role: Role) -> User:
+    def ensure_user(self, username: str, password_hash: str, role: Role, tenant_id: UUID | None = None) -> User:
         raise NotImplementedError
 
     @abstractmethod
-    def create_user(self, username: str, password_hash: str, role: Role, is_active: bool = True) -> User:
+    def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        role: Role,
+        is_active: bool = True,
+        tenant_id: UUID | None = None,
+    ) -> User:
         raise NotImplementedError
 
     @abstractmethod
@@ -163,6 +188,7 @@ class UserRepository(ABC):
         role: Role | None,
         is_active: bool | None,
         username: str | None,
+        tenant_id: UUID | None = None,
     ) -> tuple[list[User], int]:
         raise NotImplementedError
 
@@ -173,6 +199,7 @@ class UserRepository(ABC):
         role: Role | None = None,
         is_active: bool | None = None,
         password_hash: str | None = None,
+        tenant_id: UUID | None = None,
     ) -> User:
         raise NotImplementedError
 
@@ -204,6 +231,7 @@ class AuditLogRepository(ABC):
     def create(
         self,
         *,
+        tenant_id: UUID | None,
         actor_user_id: UUID | None,
         actor_username: str | None,
         action: str,
@@ -230,6 +258,7 @@ class AuditLogRepository(ABC):
         action: str | None,
         target_type: str | None,
         request_id: UUID | None,
+        tenant_id: UUID | None = None,
     ) -> tuple[list[AuditLog], int]:
         raise NotImplementedError
 
@@ -244,6 +273,78 @@ class CapacityCheckInput:
 class ResourceAccountingPort(Protocol):
     def assert_capacity(self, check: CapacityCheckInput) -> None:
         ...
+
+
+@dataclass(frozen=True)
+class TenantQuotaCheckInput:
+    tenant_id: UUID
+    current: ResourceSpec | None
+    requested: ResourceSpec
+    current_reserved: bool
+    requested_reserved: bool
+
+
+class TenantQuotaAccountingPort(Protocol):
+    def assert_quota(self, check: TenantQuotaCheckInput) -> None:
+        ...
+
+
+class TenantRepository(ABC):
+    @abstractmethod
+    def create(self, *, key: str, name: str, is_active: bool = True) -> Tenant:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get(self, tenant_id: UUID) -> Tenant | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_by_key(self, key: str) -> Tenant | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list(self, *, limit: int, offset: int, is_active: bool | None) -> tuple[list[Tenant], int]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update(self, tenant_id: UUID, *, name: str | None = None, is_active: bool | None = None) -> Tenant:
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete(self, tenant_id: UUID) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def count_active_users(self, tenant_id: UUID) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def count_active_instances(self, tenant_id: UUID) -> int:
+        raise NotImplementedError
+
+
+class TenantQuotaRepository(ABC):
+    @abstractmethod
+    def get(self, tenant_id: UUID) -> TenantQuota | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert(
+        self,
+        tenant_id: UUID,
+        *,
+        max_instances: int,
+        max_cpu: int,
+        max_memory_mib: int,
+        max_disk_gib: int,
+    ) -> TenantQuota:
+        raise NotImplementedError
+
+
+class TenantUsageReadPort(ABC):
+    @abstractmethod
+    def get_usage(self, tenant_id: UUID) -> TenantUsage:
+        raise NotImplementedError
 
 
 class UnitOfWork(Protocol):

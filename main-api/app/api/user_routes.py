@@ -30,6 +30,7 @@ def _to_user_response(user: User) -> UserResponse:
         id=user.id,
         username=user.username,
         role=user.role,
+        tenant_id=user.tenant_id,
         is_active=user.is_active,
         created_at=user.created_at,
         updated_at=user.updated_at,
@@ -50,6 +51,7 @@ def list_users(
     role: str | None = Query(default=None, pattern="^(admin|operator|viewer)$"),
     is_active: bool | None = Query(default=None),
     username: str | None = Query(default=None),
+    tenant_id: UUID | None = Query(default=None),
 ):
     repo = PostgresUserRepository(session)
     items, total = repo.list_users(
@@ -58,6 +60,7 @@ def list_users(
         role=cast(Role | None, role),
         is_active=is_active,
         username=username,
+        tenant_id=tenant_id,
     )
     return ListUsersResponse(
         items=[_to_user_response(item) for item in items],
@@ -87,12 +90,19 @@ def create_user(
     current_user: User = Depends(require_roles("admin")),
 ):
     repo = PostgresUserRepository(session)
+    role = cast(Role, body.role)
+    tenant_id = body.tenant_id
+    if role == "admin" and tenant_id is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="admin user must not have tenant_id")
+    if role in {"operator", "viewer"} and tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="tenant_id is required for non-admin user")
     try:
         user = repo.create_user(
             username=body.username,
             password_hash=hash_password(body.password),
-            role=cast(Role, body.role),
+            role=role,
             is_active=body.is_active,
+            tenant_id=tenant_id,
         )
     except ConflictError:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="username already exists")
@@ -103,6 +113,7 @@ def create_user(
         target_type="user",
         target_id=str(user.id),
         actor_user=current_user,
+        tenant_id=user.tenant_id,
         metadata={"role": user.role, "is_active": user.is_active},
     )
     session.commit()
@@ -126,6 +137,14 @@ def update_user(
 
     new_role = cast(Role, body.role) if body.role is not None else target.role
     new_is_active = body.is_active if body.is_active is not None else target.is_active
+    new_tenant_id = body.tenant_id if body.tenant_id is not None else target.tenant_id
+
+    if new_role == "admin":
+        if body.tenant_id is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="admin user must not have tenant_id")
+        new_tenant_id = None
+    elif new_tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="tenant_id is required for non-admin user")
 
     if current_user.id == target.id and new_is_active is False:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="cannot deactivate yourself")
@@ -140,6 +159,7 @@ def update_user(
         role=cast(Role | None, body.role),
         is_active=body.is_active,
         password_hash=password_hash,
+        tenant_id=new_tenant_id,
     )
 
     if body.role is not None or body.is_active is False or body.password is not None:
@@ -152,6 +172,7 @@ def update_user(
         target_type="user",
         target_id=str(updated.id),
         actor_user=current_user,
+        tenant_id=updated.tenant_id,
         metadata={
             "role": updated.role,
             "is_active": updated.is_active,
@@ -192,6 +213,7 @@ def deactivate_user(
             target_type="user",
             target_id=str(user_id),
             actor_user=current_user,
+            tenant_id=target.tenant_id,
         )
     session.commit()
     return Response(status_code=204)

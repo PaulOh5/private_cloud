@@ -15,6 +15,7 @@ class User:
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    tenant_id: UUID | None = None
 
 
 @dataclass(frozen=True)

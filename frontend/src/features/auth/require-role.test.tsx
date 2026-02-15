@@ -17,7 +17,7 @@ describe('RequireRole', () => {
 
   it('renders children when role is allowed', () => {
     mockedUseAuth.mockReturnValue({
-      user: { id: 'u1', username: 'admin', role: 'admin', is_active: true },
+      user: { id: 'u1', username: 'admin', role: 'admin', tenant_id: null, is_active: true },
       isInitializing: false,
     })
 
@@ -34,7 +34,7 @@ describe('RequireRole', () => {
 
   it('redirects when role is not allowed', () => {
     mockedUseAuth.mockReturnValue({
-      user: { id: 'u2', username: 'viewer', role: 'viewer', is_active: true },
+      user: { id: 'u2', username: 'viewer', role: 'viewer', tenant_id: 't1', is_active: true },
       isInitializing: false,
     })
 

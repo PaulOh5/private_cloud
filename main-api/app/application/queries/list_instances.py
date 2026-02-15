@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from uuid import UUID
 
 from app.domain.models import Instance
 from app.ports.interfaces import InstanceReadRepository
@@ -10,6 +11,7 @@ class ListInstancesQuery:
     offset: int
     status: str | None = None
     name: str | None = None
+    tenant_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -28,5 +30,6 @@ class ListInstancesHandler:
             offset=query.offset,
             status=query.status,
             name=query.name,
+            tenant_id=query.tenant_id,
         )
         return ListInstancesResult(items=items, total=total)

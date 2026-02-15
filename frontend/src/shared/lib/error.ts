@@ -22,6 +22,15 @@ export function resolveErrorMessage(error: unknown): string {
   }
 
   if (hasDomainMessage(payload) && typeof payload.message === 'string') {
+    if (payload.code === 'QUOTA_EXCEEDED') {
+      return `쿼터를 초과했습니다: ${payload.message}`
+    }
+    if (payload.code === 'QUOTA_CONFLICT') {
+      return `쿼터 변경 충돌: ${payload.message}`
+    }
+    if (payload.code === 'TENANT_INACTIVE') {
+      return '비활성화된 테넌트입니다.'
+    }
     return payload.message
   }
 

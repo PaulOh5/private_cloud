@@ -3,13 +3,23 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.adapters.postgres import PostgresInstanceReadRepository, PostgresInstanceRepository, PostgresTaskRepository
 from app.adapters.rabbitmq_image_sync_rpc import VmImageSyncRpcError
-from app.adapters.resource_accounting import HostResourceAccountingAdapter
+from app.adapters.resource_accounting import HostResourceAccountingAdapter, TenantQuotaAccountingAdapter
 from app.api.audit import write_audit_log
-from app.api.dependencies import advisory_lock, get_session, require_roles
+from app.api.dependencies import (
+    advisory_lock,
+    ensure_instance_access,
+    ensure_mutation_allowed_for_user_tenant,
+    ensure_task_access,
+    get_session,
+    require_roles,
+    resolve_tenant_for_create,
+    resolve_tenant_scope_for_list,
+)
 from app.api.schemas import (
     CancelTaskRequest,
     ConsoleTicketResponse,
@@ -80,6 +90,23 @@ def to_task_response(task) -> TaskResponse:
     )
 
 
+def _get_task_tenant_id(session: Session, task_id: UUID) -> UUID | None:
+    row = session.execute(
+        text(
+            """
+            SELECT i.tenant_id
+            FROM instance_tasks t
+            JOIN instances i ON i.id = t.instance_id
+            WHERE t.id = :task_id
+            """
+        ),
+        {"task_id": str(task_id)},
+    ).mappings().first()
+    if not row:
+        return None
+    return row["tenant_id"]
+
+
 @image_router.get("", response_model=ListVmImagesResponse)
 def list_images(
     request: Request,
@@ -139,15 +166,19 @@ def create_instance(
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
+    ensure_mutation_allowed_for_user_tenant(session, current_user)
+    tenant_id = resolve_tenant_for_create(current_user, body.tenant_id)
     advisory_lock(session)
     handler = CreateInstanceHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
         provisioning=request.app.state.vm_port,
         accounting=HostResourceAccountingAdapter(session),
+        quota_accounting=TenantQuotaAccountingAdapter(session),
     )
     accepted = handler.handle(
         CreateInstanceCommand(
+            tenant_id=tenant_id,
             name=body.name,
             cpu=body.cpu,
             memory_mib=body.memory_mib,
@@ -163,6 +194,7 @@ def create_instance(
         target_type="instance",
         target_id=str(accepted.instance_id),
         actor_user=current_user,
+        tenant_id=tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
     session.commit()
@@ -184,12 +216,18 @@ def update_instance(
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
+    ensure_mutation_allowed_for_user_tenant(session, current_user)
+    existing = PostgresInstanceReadRepository(session).get(instance_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+    ensure_instance_access(current_user, existing.tenant_id)
     advisory_lock(session)
     handler = UpdateInstanceHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
         provisioning=request.app.state.vm_port,
         accounting=HostResourceAccountingAdapter(session),
+        quota_accounting=TenantQuotaAccountingAdapter(session),
     )
     accepted = handler.handle(
         UpdateInstanceCommand(
@@ -207,6 +245,7 @@ def update_instance(
         target_type="instance",
         target_id=str(instance_id),
         actor_user=current_user,
+        tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
     session.commit()
@@ -226,6 +265,11 @@ def delete_instance(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
+    ensure_mutation_allowed_for_user_tenant(session, current_user)
+    existing = PostgresInstanceReadRepository(session).get(instance_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+    ensure_instance_access(current_user, existing.tenant_id)
     advisory_lock(session)
     handler = DeleteInstanceHandler(
         write_repository=PostgresInstanceRepository(session),
@@ -240,6 +284,7 @@ def delete_instance(
         target_type="instance",
         target_id=str(instance_id),
         actor_user=current_user,
+        tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
     session.commit()
@@ -259,10 +304,20 @@ def list_instances(
     offset: int = Query(default=0, ge=0),
     status: str | None = Query(default=None),
     name: str | None = Query(default=None),
-    _=Depends(require_roles("viewer", "operator", "admin")),
+    tenant_id: UUID | None = Query(default=None),
+    current_user: User = Depends(require_roles("viewer", "operator", "admin")),
 ):
+    effective_tenant_id = resolve_tenant_scope_for_list(current_user, tenant_id)
     handler = ListInstancesHandler(read_repository=PostgresInstanceReadRepository(session))
-    result = handler.handle(ListInstancesQuery(limit=limit, offset=offset, status=status, name=name))
+    result = handler.handle(
+        ListInstancesQuery(
+            limit=limit,
+            offset=offset,
+            status=status,
+            name=name,
+            tenant_id=effective_tenant_id,
+        )
+    )
     return ListInstancesResponse(
         items=[to_instance_response(instance) for instance in result.items],
         total=result.total,
@@ -275,10 +330,12 @@ def list_instances(
 def get_instance(
     instance_id: UUID,
     session: Session = Depends(get_session),
-    _=Depends(require_roles("viewer", "operator", "admin")),
+    current_user: User = Depends(require_roles("viewer", "operator", "admin")),
 ):
     handler = GetInstanceHandler(read_repository=PostgresInstanceReadRepository(session))
-    return to_instance_response(handler.handle(instance_id))
+    instance = handler.handle(instance_id)
+    ensure_instance_access(current_user, instance.tenant_id)
+    return to_instance_response(instance)
 
 
 @instance_router.post("/{instance_id}/console-ticket", response_model=ConsoleTicketResponse)
@@ -290,6 +347,7 @@ def issue_console_ticket(
 ):
     handler = GetInstanceHandler(read_repository=PostgresInstanceReadRepository(session))
     instance = handler.handle(instance_id)
+    ensure_instance_access(current_user, instance.tenant_id)
     if instance.status != "running":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -310,6 +368,7 @@ def issue_console_ticket(
         target_type="instance",
         target_id=str(instance_id),
         actor_user=current_user,
+        tenant_id=instance.tenant_id,
         metadata={"expires_at": ticket.expires_at.isoformat()},
     )
     session.commit()
@@ -422,11 +481,20 @@ def list_tasks(
     status: str | None = Query(default=None),
     instance_id: UUID | None = Query(default=None),
     command: str | None = Query(default=None),
-    _=Depends(require_roles("viewer", "operator", "admin")),
+    tenant_id: UUID | None = Query(default=None),
+    current_user: User = Depends(require_roles("viewer", "operator", "admin")),
 ):
+    effective_tenant_id = resolve_tenant_scope_for_list(current_user, tenant_id)
     handler = ListTasksHandler(task_repository=PostgresTaskRepository(session))
     result = handler.handle(
-        ListTasksQuery(limit=limit, offset=offset, status=status, instance_id=instance_id, command=command)
+        ListTasksQuery(
+            limit=limit,
+            offset=offset,
+            status=status,
+            instance_id=instance_id,
+            command=command,
+            tenant_id=effective_tenant_id,
+        )
     )
     return ListTasksResponse(
         items=[to_task_response(task) for task in result.items],
@@ -440,8 +508,12 @@ def list_tasks(
 def get_task(
     task_id: UUID,
     session: Session = Depends(get_session),
-    _=Depends(require_roles("viewer", "operator", "admin")),
+    current_user: User = Depends(require_roles("viewer", "operator", "admin")),
 ):
+    task_tenant_id = _get_task_tenant_id(session, task_id)
+    if task_tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    ensure_task_access(current_user, task_tenant_id)
     handler = GetTaskHandler(task_repository=PostgresTaskRepository(session))
     return to_task_response(handler.handle(task_id))
 
@@ -453,12 +525,18 @@ def retry_task(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
+    ensure_mutation_allowed_for_user_tenant(session, current_user)
+    task_tenant_id = _get_task_tenant_id(session, task_id)
+    if task_tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    ensure_task_access(current_user, task_tenant_id)
     advisory_lock(session)
     handler = RetryTaskHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
         provisioning=request.app.state.vm_port,
         accounting=HostResourceAccountingAdapter(session),
+        quota_accounting=TenantQuotaAccountingAdapter(session),
     )
     accepted = handler.handle(RetryTaskCommand(task_id=task_id))
     write_audit_log(
@@ -468,6 +546,7 @@ def retry_task(
         target_type="task",
         target_id=str(task_id),
         actor_user=current_user,
+        tenant_id=task_tenant_id,
         metadata={
             "new_task_id": str(accepted.task_id),
             "instance_id": str(accepted.instance_id),
@@ -492,6 +571,11 @@ def cancel_task(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
+    ensure_mutation_allowed_for_user_tenant(session, current_user)
+    task_tenant_id = _get_task_tenant_id(session, task_id)
+    if task_tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    ensure_task_access(current_user, task_tenant_id)
     advisory_lock(session)
     handler = CancelTaskHandler(
         write_repository=PostgresInstanceRepository(session),
@@ -514,6 +598,7 @@ def cancel_task(
             target_type="task",
             target_id=str(task_id),
             actor_user=current_user,
+            tenant_id=task_tenant_id,
             metadata={"reason": body.reason if body else None, "error_code": exc.code, "error_message": str(exc)},
         )
         session.commit()
@@ -526,6 +611,7 @@ def cancel_task(
         target_type="task",
         target_id=str(task_id),
         actor_user=current_user,
+        tenant_id=task_tenant_id,
         metadata={
             "reason": body.reason if body else None,
             "result_status": accepted.status,
@@ -540,6 +626,7 @@ def cancel_task(
             target_type="task",
             target_id=str(task_id),
             actor_user=current_user,
+            tenant_id=task_tenant_id,
             metadata={"reason": body.reason if body else None},
         )
     session.commit()

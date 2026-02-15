@@ -11,6 +11,8 @@ import { LoginPage } from '@/pages/login-page'
 import { NotFoundPage } from '@/pages/not-found-page'
 import { TaskDetailPage } from '@/pages/task-detail-page'
 import { TasksPage } from '@/pages/tasks-page'
+import { TenantDetailPage } from '@/pages/tenant-detail-page'
+import { TenantsPage } from '@/pages/tenants-page'
 import { UnauthorizedPage } from '@/pages/unauthorized-page'
 import { UserDetailPage } from '@/pages/user-detail-page'
 import { UsersPage } from '@/pages/users-page'
@@ -51,6 +53,22 @@ export const router = createBrowserRouter([
       {
         path: 'tasks/:taskId',
         element: <TaskDetailPage />,
+      },
+      {
+        path: 'tenants',
+        element: (
+          <RequireRole allow={['admin']}>
+            <TenantsPage />
+          </RequireRole>
+        ),
+      },
+      {
+        path: 'tenants/:tenantId',
+        element: (
+          <RequireRole allow={['admin']}>
+            <TenantDetailPage />
+          </RequireRole>
+        ),
       },
       {
         path: 'users',

@@ -8,6 +8,7 @@ export interface ListAuditLogsParams {
   action?: string
   target_type?: string
   request_id?: string
+  tenant_id?: string
 }
 
 export async function listAuditLogs(params: ListAuditLogsParams): Promise<PaginationResponse<AuditLog>> {

@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { listAuditLogs } from '@/features/audit-logs/api'
+import { listTenants } from '@/features/tenants/api'
 import { formatDateTime } from '@/shared/lib/date'
 import { resolveErrorMessage } from '@/shared/lib/error'
 import { toOffset } from '@/shared/lib/pagination'
@@ -14,6 +15,7 @@ import { Input } from '@/shared/ui/input'
 import { Label } from '@/shared/ui/label'
 import { PageHeader } from '@/shared/ui/page-header'
 import { Pagination } from '@/shared/ui/pagination'
+import { Select } from '@/shared/ui/select'
 import { Spinner } from '@/shared/ui/spinner'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 
@@ -25,6 +27,7 @@ export function AuditLogsPage() {
   const [actionFilter, setActionFilter] = useState('')
   const [targetTypeFilter, setTargetTypeFilter] = useState('')
   const [requestIdFilter, setRequestIdFilter] = useState('')
+  const [tenantFilter, setTenantFilter] = useState('')
 
   const params = useMemo(
     () => ({
@@ -34,14 +37,21 @@ export function AuditLogsPage() {
       action: actionFilter || undefined,
       target_type: targetTypeFilter || undefined,
       request_id: requestIdFilter || undefined,
+      tenant_id: tenantFilter || undefined,
     }),
-    [page, actorUserIdFilter, actionFilter, targetTypeFilter, requestIdFilter],
+    [page, actorUserIdFilter, actionFilter, targetTypeFilter, requestIdFilter, tenantFilter],
   )
 
   const logsQuery = useQuery({
     queryKey: ['audit-logs', params],
     queryFn: () => listAuditLogs(params),
     placeholderData: (previous) => previous,
+  })
+
+  const tenantsQuery = useQuery({
+    queryKey: ['tenants', 'audit-page-selector'],
+    queryFn: () => listTenants({ limit: 200, offset: 0 }),
+    staleTime: 60_000,
   })
 
   return (
@@ -63,7 +73,7 @@ export function AuditLogsPage() {
           <CardDescription>actor_user_id / action / target_type / request_id 조건 지원</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
             <div>
               <Label htmlFor="actor-user-id">actor_user_id</Label>
               <Input
@@ -100,6 +110,17 @@ export function AuditLogsPage() {
                 placeholder="UUID"
               />
             </div>
+            <div>
+              <Label htmlFor="tenant-id">tenant_id</Label>
+              <Select id="tenant-id" value={tenantFilter} onChange={(event) => setTenantFilter(event.target.value)}>
+                <option value="">전체</option>
+                {(tenantsQuery.data?.items ?? []).map((tenant) => (
+                  <option key={tenant.id} value={tenant.id}>
+                    {tenant.name} ({tenant.key})
+                  </option>
+                ))}
+              </Select>
+            </div>
             <div className="flex items-end">
               <Button
                 className="w-full"
@@ -135,6 +156,7 @@ export function AuditLogsPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>ID</TableHead>
+                      <TableHead>tenant_id</TableHead>
                       <TableHead>action</TableHead>
                       <TableHead>target</TableHead>
                       <TableHead>actor</TableHead>
@@ -146,6 +168,7 @@ export function AuditLogsPage() {
                     {logsQuery.data.items.map((log) => (
                       <TableRow key={log.id}>
                         <TableCell className="font-mono text-xs">{log.id}</TableCell>
+                        <TableCell className="font-mono text-xs">{log.tenant_id || '-'}</TableCell>
                         <TableCell>{log.action}</TableCell>
                         <TableCell>
                           {log.target_type} / {log.target_id || '-'}

@@ -2,12 +2,13 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Eye, Plus, RefreshCcw, Settings2, UserX } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { z } from 'zod'
 
 import { useAuth } from '@/features/auth/auth-context'
+import { listTenants } from '@/features/tenants/api'
 import { createUser, deactivateUser, listRoles, listUsers, updateUser } from '@/features/users/api'
 import { formatDateTime } from '@/shared/lib/date'
 import { resolveErrorMessage } from '@/shared/lib/error'
@@ -39,6 +40,7 @@ const createUserSchema = z.object({
   username: z.string().min(3, '아이디는 최소 3자 이상이어야 합니다.').max(64),
   password: z.string().min(8, '비밀번호는 최소 8자 이상이어야 합니다.').max(256),
   role: z.enum(['admin', 'operator', 'viewer']),
+  tenant_id: z.string().uuid('유효한 tenant_id를 선택하세요.').optional().or(z.literal('')),
   is_active: z.boolean(),
 })
 
@@ -46,6 +48,7 @@ type CreateUserForm = z.infer<typeof createUserSchema>
 
 const updateUserSchema = z.object({
   role: z.enum(['admin', 'operator', 'viewer']),
+  tenant_id: z.string().uuid('유효한 tenant_id를 선택하세요.').optional().or(z.literal('')),
   is_active: z.boolean(),
   password: z
     .string()
@@ -58,11 +61,13 @@ type UpdateUserForm = z.infer<typeof updateUserSchema>
 export function UsersPage() {
   const queryClient = useQueryClient()
   const { user: currentUser } = useAuth()
+  const isAdmin = currentUser?.role === 'admin'
 
   const [page, setPage] = useState(1)
   const [roleFilter, setRoleFilter] = useState('')
   const [activeFilter, setActiveFilter] = useState('')
   const [usernameFilter, setUsernameFilter] = useState('')
+  const [tenantFilter, setTenantFilter] = useState('')
 
   const [createOpen, setCreateOpen] = useState(false)
   const [updateTarget, setUpdateTarget] = useState<User | null>(null)
@@ -74,6 +79,13 @@ export function UsersPage() {
     queryFn: listRoles,
   })
 
+  const tenantsQuery = useQuery({
+    queryKey: ['tenants', 'user-page-selector'],
+    queryFn: () => listTenants({ limit: 200, offset: 0 }),
+    enabled: isAdmin,
+    staleTime: 60_000,
+  })
+
   const params = useMemo(
     () => ({
       limit: pageSize,
@@ -81,8 +93,9 @@ export function UsersPage() {
       role: roleFilter || undefined,
       is_active: activeFilter ? activeFilter === 'true' : undefined,
       username: usernameFilter || undefined,
+      tenant_id: tenantFilter || undefined,
     }),
-    [page, roleFilter, activeFilter, usernameFilter],
+    [page, roleFilter, activeFilter, usernameFilter, tenantFilter],
   )
 
   const usersQuery = useQuery({
@@ -97,6 +110,7 @@ export function UsersPage() {
       username: '',
       password: '',
       role: 'viewer',
+      tenant_id: '',
       is_active: true,
     },
   })
@@ -105,10 +119,14 @@ export function UsersPage() {
     resolver: zodResolver(updateUserSchema),
     defaultValues: {
       role: 'viewer',
+      tenant_id: '',
       is_active: true,
       password: '',
     },
   })
+
+  const createRole = useWatch({ control: createForm.control, name: 'role' })
+  const updateRole = useWatch({ control: updateForm.control, name: 'role' })
 
   useEffect(() => {
     if (!updateTarget) {
@@ -117,25 +135,49 @@ export function UsersPage() {
 
     updateForm.reset({
       role: updateTarget.role,
+      tenant_id: updateTarget.tenant_id || '',
       is_active: updateTarget.is_active,
       password: '',
     })
   }, [updateTarget, updateForm])
+
+  useEffect(() => {
+    if (createRole === 'admin') {
+      createForm.setValue('tenant_id', '')
+    }
+  }, [createRole, createForm])
+
+  useEffect(() => {
+    if (updateRole === 'admin') {
+      updateForm.setValue('tenant_id', '')
+    }
+  }, [updateRole, updateForm])
 
   const createMutation = useMutation({
     mutationFn: createUser,
     onSuccess: (created) => {
       toast.success(`사용자 생성 완료: ${created.username}`)
       setCreateOpen(false)
-      createForm.reset()
+      createForm.reset({
+        username: '',
+        password: '',
+        role: 'viewer',
+        tenant_id: '',
+        is_active: true,
+      })
       void queryClient.invalidateQueries({ queryKey: ['users'] })
     },
     onError: (error) => toast.error(resolveErrorMessage(error)),
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: { role?: Role; is_active?: boolean; password?: string } }) =>
-      updateUser(id, payload),
+    mutationFn: ({
+      id,
+      payload,
+    }: {
+      id: string
+      payload: { role?: Role; tenant_id?: string | null; is_active?: boolean; password?: string }
+    }) => updateUser(id, payload),
     onSuccess: (updated) => {
       toast.success(`사용자 정보 수정 완료: ${updated.username}`)
       setUpdateTarget(null)
@@ -157,11 +199,25 @@ export function UsersPage() {
   })
 
   const onCreate = createForm.handleSubmit((value) => {
-    createMutation.mutate(value)
+    if (value.role !== 'admin' && !value.tenant_id) {
+      toast.error('operator/viewer 계정은 tenant_id가 필요합니다.')
+      return
+    }
+    createMutation.mutate({
+      username: value.username,
+      password: value.password,
+      role: value.role,
+      tenant_id: value.role === 'admin' ? undefined : value.tenant_id || undefined,
+      is_active: value.is_active,
+    })
   })
 
   const onUpdate = updateForm.handleSubmit((value) => {
     if (!updateTarget) {
+      return
+    }
+    if (value.role !== 'admin' && !value.tenant_id && !updateTarget.tenant_id) {
+      toast.error('operator/viewer 계정은 tenant_id가 필요합니다.')
       return
     }
 
@@ -169,6 +225,7 @@ export function UsersPage() {
       id: updateTarget.id,
       payload: {
         role: value.role,
+        tenant_id: value.role === 'admin' ? undefined : value.tenant_id || updateTarget.tenant_id || undefined,
         is_active: value.is_active,
         password: value.password || undefined,
       },
@@ -213,7 +270,7 @@ export function UsersPage() {
           <CardDescription>role / is_active / username 조건 조회</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
             <div>
               <Label htmlFor="role-filter">역할</Label>
               <Select id="role-filter" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
@@ -241,6 +298,17 @@ export function UsersPage() {
                 onChange={(event) => setUsernameFilter(event.target.value)}
                 placeholder="부분 일치"
               />
+            </div>
+            <div>
+              <Label htmlFor="tenant-filter">Tenant</Label>
+              <Select id="tenant-filter" value={tenantFilter} onChange={(event) => setTenantFilter(event.target.value)}>
+                <option value="">전체</option>
+                {(tenantsQuery.data?.items ?? []).map((tenant) => (
+                  <option key={tenant.id} value={tenant.id}>
+                    {tenant.name} ({tenant.key})
+                  </option>
+                ))}
+              </Select>
             </div>
             <div className="flex items-end">
               <Button
@@ -279,6 +347,7 @@ export function UsersPage() {
                       <TableHead>ID</TableHead>
                       <TableHead>아이디</TableHead>
                       <TableHead>역할</TableHead>
+                      <TableHead>Tenant</TableHead>
                       <TableHead>활성</TableHead>
                       <TableHead>생성 시각</TableHead>
                       <TableHead className="text-right">액션</TableHead>
@@ -290,6 +359,7 @@ export function UsersPage() {
                         <TableCell className="font-mono text-xs">{user.id}</TableCell>
                         <TableCell>{user.username}</TableCell>
                         <TableCell>{user.role}</TableCell>
+                        <TableCell className="font-mono text-xs">{user.tenant_id || '-'}</TableCell>
                         <TableCell>
                           <Badge tone={user.is_active ? 'success' : 'neutral'}>
                             {user.is_active ? 'active' : 'inactive'}
@@ -363,6 +433,22 @@ export function UsersPage() {
                 <option value="viewer">viewer</option>
               </Select>
             </div>
+            {createRole !== 'admin' ? (
+              <div>
+                <Label htmlFor="create-tenant-id">tenant_id</Label>
+                <Select id="create-tenant-id" {...createForm.register('tenant_id')}>
+                  <option value="">Tenant 선택</option>
+                  {(tenantsQuery.data?.items ?? []).map((tenant) => (
+                    <option key={tenant.id} value={tenant.id}>
+                      {tenant.name} ({tenant.key})
+                    </option>
+                  ))}
+                </Select>
+                {createForm.formState.errors.tenant_id?.message ? (
+                  <p className="mt-1 text-xs text-destructive">{createForm.formState.errors.tenant_id.message}</p>
+                ) : null}
+              </div>
+            ) : null}
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" {...createForm.register('is_active')} />
               즉시 활성화
@@ -394,6 +480,22 @@ export function UsersPage() {
                 <option value="viewer">viewer</option>
               </Select>
             </div>
+            {updateRole !== 'admin' ? (
+              <div>
+                <Label htmlFor="update-tenant-id">tenant_id</Label>
+                <Select id="update-tenant-id" {...updateForm.register('tenant_id')}>
+                  <option value="">Tenant 선택</option>
+                  {(tenantsQuery.data?.items ?? []).map((tenant) => (
+                    <option key={tenant.id} value={tenant.id}>
+                      {tenant.name} ({tenant.key})
+                    </option>
+                  ))}
+                </Select>
+                {updateForm.formState.errors.tenant_id?.message ? (
+                  <p className="mt-1 text-xs text-destructive">{updateForm.formState.errors.tenant_id.message}</p>
+                ) : null}
+              </div>
+            ) : null}
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" {...updateForm.register('is_active')} />
               활성 상태
