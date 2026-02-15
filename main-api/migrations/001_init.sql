@@ -58,12 +58,15 @@ CREATE TABLE IF NOT EXISTS instance_tasks (
     id UUID PRIMARY KEY,
     instance_id UUID NOT NULL REFERENCES instances (id),
     command TEXT NOT NULL CHECK (command IN ('create', 'update', 'delete')),
-    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'cancel_pending', 'succeeded', 'failed', 'canceled')),
     request_id UUID NOT NULL UNIQUE,
     request_payload JSONB NOT NULL,
     result_payload JSONB NULL,
     error_code TEXT NULL,
     error_message TEXT NULL,
+    retry_of_task_id UUID NULL,
+    canceled_by UUID NULL,
+    cancel_reason TEXT NULL,
     attempt_count INT NOT NULL DEFAULT 0,
     max_attempts INT NOT NULL DEFAULT 3,
     created_at TIMESTAMPTZ NOT NULL,
@@ -71,6 +74,31 @@ CREATE TABLE IF NOT EXISTS instance_tasks (
     finished_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NOT NULL
 );
+
+ALTER TABLE instance_tasks ADD COLUMN IF NOT EXISTS retry_of_task_id UUID NULL;
+ALTER TABLE instance_tasks ADD COLUMN IF NOT EXISTS canceled_by UUID NULL;
+ALTER TABLE instance_tasks ADD COLUMN IF NOT EXISTS cancel_reason TEXT NULL;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'instance_tasks_status_check'
+    ) THEN
+        ALTER TABLE instance_tasks DROP CONSTRAINT instance_tasks_status_check;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'instance_tasks_status_check_async'
+    ) THEN
+        ALTER TABLE instance_tasks DROP CONSTRAINT instance_tasks_status_check_async;
+    END IF;
+
+    ALTER TABLE instance_tasks
+        ADD CONSTRAINT instance_tasks_status_check_async
+        CHECK (status IN ('queued', 'running', 'cancel_pending', 'succeeded', 'failed', 'canceled'));
+END $$;
 
 CREATE INDEX IF NOT EXISTS instance_tasks_instance_id_idx ON instance_tasks (instance_id);
 CREATE INDEX IF NOT EXISTS instance_tasks_status_idx ON instance_tasks (status);

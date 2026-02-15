@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -84,6 +85,38 @@ class TaskRepository(ABC):
 
     @abstractmethod
     def mark_running(self, task_id: UUID, attempt_count: int) -> InstanceTask:
+        raise NotImplementedError
+
+    @abstractmethod
+    def mark_cancel_pending(
+        self,
+        task_id: UUID,
+        canceled_by: UUID | None,
+        cancel_reason: str | None,
+    ) -> InstanceTask:
+        raise NotImplementedError
+
+    @abstractmethod
+    def mark_canceled(
+        self,
+        task_id: UUID,
+        attempt_count: int,
+        canceled_by: UUID | None,
+        cancel_reason: str | None,
+        result_payload: dict | None,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> InstanceTask:
+        raise NotImplementedError
+
+    @abstractmethod
+    def clone_for_retry(
+        self,
+        source_task: InstanceTask,
+        new_task_id: UUID,
+        new_request_id: UUID,
+        created_at: datetime,
+    ) -> InstanceTask:
         raise NotImplementedError
 
     @abstractmethod

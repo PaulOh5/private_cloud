@@ -144,3 +144,137 @@ def test_result_processor_update_failed_rolls_back_spec(
     assert instance.resource_spec.cpu == 2
     assert instance.resource_spec.memory_mib == 4096
     assert instance.resource_spec.disk_gib == 30
+
+
+def test_result_processor_canceled_marks_task_canceled(
+    in_memory_instance_repo,
+    in_memory_task_repo,
+):
+    instance_id = uuid4()
+    task_id = uuid4()
+    request_id = uuid4()
+    now = datetime.now(timezone.utc)
+
+    in_memory_instance_repo.create(
+        Instance(
+            id=instance_id,
+            name="vm-canceled",
+            resource_spec=ResourceSpec(cpu=4, memory_mib=8192, disk_gib=40),
+            status="updating_pending",
+            ip_address="172.30.60.10",
+            host_node="localhost",
+            reserve_resources=True,
+            last_task_id=task_id,
+            deleted_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    in_memory_task_repo.create_task(
+        InstanceTask(
+            id=task_id,
+            instance_id=instance_id,
+            command="update",
+            status="cancel_pending",
+            request_id=request_id,
+            request_payload={
+                "previous_spec": {"cpu": 2, "memory_mib": 4096, "disk_gib": 30},
+                "previous_ip_address": "172.30.60.10",
+                "previous_deleted_at": None,
+            },
+            result_payload=None,
+            error_code=None,
+            error_message=None,
+            attempt_count=1,
+            max_attempts=3,
+            created_at=now,
+            started_at=now,
+            finished_at=None,
+            updated_at=now,
+        )
+    )
+
+    processor = TaskResultProcessor(in_memory_instance_repo, in_memory_task_repo)
+    processor.process(
+        VmResultEvent(
+            task_id=task_id,
+            request_id=request_id,
+            instance_id=instance_id,
+            command="cancel",
+            status="canceled",
+            attempt_count=1,
+            result={"status": "canceled"},
+            error_code=None,
+            error_message=None,
+            timestamp=datetime.now(timezone.utc),
+        )
+    )
+
+    task = in_memory_task_repo.tasks[task_id]
+    instance = in_memory_instance_repo.instances[instance_id]
+    assert task.status == "canceled"
+    assert instance.status == "error"
+    assert instance.resource_spec.cpu == 2
+
+
+def test_result_processor_ignores_running_event_for_cancel_pending(
+    in_memory_instance_repo,
+    in_memory_task_repo,
+):
+    instance_id = uuid4()
+    task_id = uuid4()
+    request_id = uuid4()
+    now = datetime.now(timezone.utc)
+
+    in_memory_instance_repo.create(
+        Instance(
+            id=instance_id,
+            name="vm-cancel-running-ignore",
+            resource_spec=ResourceSpec(cpu=2, memory_mib=2048, disk_gib=30),
+            status="updating_pending",
+            ip_address="172.30.10.10",
+            host_node="localhost",
+            reserve_resources=True,
+            last_task_id=task_id,
+            deleted_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    in_memory_task_repo.create_task(
+        InstanceTask(
+            id=task_id,
+            instance_id=instance_id,
+            command="update",
+            status="cancel_pending",
+            request_id=request_id,
+            request_payload={},
+            result_payload=None,
+            error_code=None,
+            error_message=None,
+            attempt_count=1,
+            max_attempts=3,
+            created_at=now,
+            started_at=now,
+            finished_at=None,
+            updated_at=now,
+        )
+    )
+
+    processor = TaskResultProcessor(in_memory_instance_repo, in_memory_task_repo)
+    processor.process(
+        VmResultEvent(
+            task_id=task_id,
+            request_id=request_id,
+            instance_id=instance_id,
+            command="cancel",
+            status="running",
+            attempt_count=1,
+            result=None,
+            error_code=None,
+            error_message=None,
+            timestamp=datetime.now(timezone.utc),
+        )
+    )
+
+    assert in_memory_task_repo.tasks[task_id].status == "cancel_pending"

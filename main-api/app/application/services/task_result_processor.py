@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
+from app.application.services.task_instance_state import revert_instance_state_on_terminal_failure
 from app.domain.errors import NotFoundError
-from app.domain.models import ResourceSpec
 from app.ports.interfaces import InstanceRepository, TaskRepository
 
 
@@ -40,7 +40,7 @@ class TaskResultProcessor:
                 raise RetryableResultEventError(f"task {event.task_id} not yet visible")
             return
 
-        if task.status in {"succeeded", "failed"}:
+        if task.status in {"succeeded", "failed", "canceled"}:
             return
 
         instance = self.instance_repo.get_for_update(task.instance_id)
@@ -48,7 +48,8 @@ class TaskResultProcessor:
             raise NotFoundError(f"instance {task.instance_id} not found")
 
         if event.status == "running":
-            self.task_repo.mark_running(task.id, max(event.attempt_count, 1))
+            if task.status != "cancel_pending":
+                self.task_repo.mark_running(task.id, max(event.attempt_count, 1))
             return
 
         if event.status == "succeeded":
@@ -63,7 +64,30 @@ class TaskResultProcessor:
             )
             return
 
-        self._handle_failed(task.command, task.request_payload, instance.id)
+        if event.status == "canceled":
+            revert_instance_state_on_terminal_failure(
+                instance_repo=self.instance_repo,
+                instance_id=instance.id,
+                command=task.command,
+                request_payload=task.request_payload,
+            )
+            self.task_repo.mark_canceled(
+                task.id,
+                attempt_count=max(event.attempt_count, task.attempt_count),
+                canceled_by=None,
+                cancel_reason=None,
+                result_payload=event.result,
+                error_code=event.error_code or "CANCELED",
+                error_message=event.error_message or "task canceled",
+            )
+            return
+
+        revert_instance_state_on_terminal_failure(
+            instance_repo=self.instance_repo,
+            instance_id=instance.id,
+            command=task.command,
+            request_payload=task.request_payload,
+        )
         self.task_repo.mark_terminal(
             task.id,
             status="failed",
@@ -106,51 +130,4 @@ class TaskResultProcessor:
                 last_task_id=event.task_id,
                 deleted_at=datetime.now(timezone.utc),
                 ip_address=None,
-            )
-
-    def _handle_failed(self, command: str, request_payload: dict, instance_id: UUID) -> None:
-        if command == "create":
-            self.instance_repo.update_state(
-                instance_id,
-                status="error",
-                reserve_resources=False,
-                last_task_id=None,
-                deleted_at=None,
-                ip_address=None,
-            )
-            return
-
-        if command == "update":
-            previous_spec = request_payload.get("previous_spec", {})
-            spec = ResourceSpec(
-                cpu=int(previous_spec.get("cpu", 1)),
-                memory_mib=int(previous_spec.get("memory_mib", 512)),
-                disk_gib=int(previous_spec.get("disk_gib", 10)),
-            )
-            self.instance_repo.update_spec(
-                instance_id,
-                spec=spec,
-                status="error",
-                ip_address=request_payload.get("previous_ip_address"),
-                reserve_resources=True,
-                last_task_id=None,
-                deleted_at=request_payload.get("previous_deleted_at"),
-            )
-            return
-
-        if command == "delete":
-            previous_spec = request_payload.get("previous_spec", {})
-            spec = ResourceSpec(
-                cpu=int(previous_spec.get("cpu", 1)),
-                memory_mib=int(previous_spec.get("memory_mib", 512)),
-                disk_gib=int(previous_spec.get("disk_gib", 10)),
-            )
-            self.instance_repo.update_spec(
-                instance_id,
-                spec=spec,
-                status="error",
-                ip_address=request_payload.get("previous_ip_address"),
-                reserve_resources=True,
-                last_task_id=None,
-                deleted_at=None,
             )

@@ -34,6 +34,13 @@ type DeletePayload struct {
 	HostNode   string `json:"host_node"`
 }
 
+type CancelPayload struct {
+	InstanceID    string `json:"instance_id"`
+	TargetTaskID  string `json:"target_task_id"`
+	TargetCommand string `json:"target_command"`
+	Reason        string `json:"reason"`
+}
+
 type CommandResponse struct {
 	CorrelationID string         `json:"correlation_id"`
 	Success       bool           `json:"success"`

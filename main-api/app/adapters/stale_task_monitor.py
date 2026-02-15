@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.postgres import PostgresInstanceRepository, PostgresTaskRepository
-from app.domain.models import ResourceSpec
+from app.application.services.task_instance_state import revert_instance_state_on_terminal_failure
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,12 @@ class StaleTaskMonitor:
                 if not task or task.status != "queued":
                     continue
 
-                self._revert_instance_state(instance_repo, task.instance_id, task.command, task.request_payload)
+                revert_instance_state_on_terminal_failure(
+                    instance_repo=instance_repo,
+                    instance_id=task.instance_id,
+                    command=task.command,
+                    request_payload=task.request_payload,
+                )
                 task_repo.mark_terminal(
                     task.id,
                     status="failed",
@@ -96,60 +101,3 @@ class StaleTaskMonitor:
 
             session.commit()
         return recovered
-
-    def _revert_instance_state(
-        self,
-        instance_repo: PostgresInstanceRepository,
-        instance_id: UUID,
-        command: str,
-        request_payload: dict,
-    ) -> None:
-        instance = instance_repo.get_for_update(instance_id)
-        if not instance:
-            return
-
-        if command == "create":
-            instance_repo.update_state(
-                instance_id,
-                status="error",
-                reserve_resources=False,
-                last_task_id=None,
-                deleted_at=None,
-                ip_address=None,
-            )
-            return
-
-        if command == "update":
-            previous_spec = request_payload.get("previous_spec", {})
-            spec = ResourceSpec(
-                cpu=int(previous_spec.get("cpu", 1)),
-                memory_mib=int(previous_spec.get("memory_mib", 512)),
-                disk_gib=int(previous_spec.get("disk_gib", 10)),
-            )
-            instance_repo.update_spec(
-                instance_id,
-                spec=spec,
-                status="error",
-                ip_address=request_payload.get("previous_ip_address"),
-                reserve_resources=True,
-                last_task_id=None,
-                deleted_at=request_payload.get("previous_deleted_at"),
-            )
-            return
-
-        if command == "delete":
-            previous_spec = request_payload.get("previous_spec", {})
-            spec = ResourceSpec(
-                cpu=int(previous_spec.get("cpu", 1)),
-                memory_mib=int(previous_spec.get("memory_mib", 512)),
-                disk_gib=int(previous_spec.get("disk_gib", 10)),
-            )
-            instance_repo.update_spec(
-                instance_id,
-                spec=spec,
-                status="error",
-                ip_address=request_payload.get("previous_ip_address"),
-                reserve_resources=True,
-                last_task_id=None,
-                deleted_at=None,
-            )

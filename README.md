@@ -87,12 +87,14 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 - `GET /instances/{id}`
 - `GET /tasks`
 - `GET /tasks/{id}`
+- `POST /tasks/{id}/retry` -> `202 + new task_id`
+- `POST /tasks/{id}/cancel` -> `202 + cancel_pending|canceled`
 
 All `/instances` and `/tasks` endpoints require `Authorization: Bearer <token>`.
 
 ## State model
 - Instance: `creating_pending | updating_pending | deleting_pending | running | stopped | error | deleted`
-- Task: `queued | running | succeeded | failed`
+- Task: `queued | running | cancel_pending | succeeded | failed | canceled`
 
 ## Testing `frontend`
 ### Install dependencies

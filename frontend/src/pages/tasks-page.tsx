@@ -50,7 +50,11 @@ export function TasksPage() {
         return false
       }
 
-      return payload.items.some((item) => item.status === 'queued' || item.status === 'running') ? 5000 : false
+      return payload.items.some(
+        (item) => item.status === 'queued' || item.status === 'running' || item.status === 'cancel_pending',
+      )
+        ? 5000
+        : false
     },
   })
 
@@ -58,7 +62,7 @@ export function TasksPage() {
     <>
       <PageHeader
         title="작업 이력"
-        description="비동기 VM 작업 상태를 조회합니다. queued/running 항목이 있으면 5초 주기로 자동 새로고침됩니다."
+        description="비동기 VM 작업 상태를 조회합니다. queued/running/cancel_pending 항목이 있으면 5초 주기로 자동 새로고침됩니다."
         actions={
           <Button variant="outline" onClick={() => void tasksQuery.refetch()}>
             <RefreshCcw className="mr-2 h-4 w-4" />
@@ -80,8 +84,10 @@ export function TasksPage() {
                 <option value="">전체</option>
                 <option value="queued">queued</option>
                 <option value="running">running</option>
+                <option value="cancel_pending">cancel_pending</option>
                 <option value="succeeded">succeeded</option>
                 <option value="failed">failed</option>
+                <option value="canceled">canceled</option>
               </Select>
             </div>
             <div>

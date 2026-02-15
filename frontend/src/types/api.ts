@@ -9,7 +9,7 @@ export type InstanceStatus =
   | 'error'
   | 'deleted'
 
-export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'failed'
+export type TaskStatus = 'queued' | 'running' | 'cancel_pending' | 'succeeded' | 'failed' | 'canceled'
 export type TaskCommand = 'create' | 'update' | 'delete'
 
 export interface PaginationResponse<T> {

@@ -13,8 +13,10 @@ export const instanceStatusLabel: Record<InstanceStatus, string> = {
 export const taskStatusLabel: Record<TaskStatus, string> = {
   queued: '대기',
   running: '실행 중',
+  cancel_pending: '취소 대기',
   succeeded: '성공',
   failed: '실패',
+  canceled: '취소됨',
 }
 
 export const statusTone: Record<string, 'neutral' | 'success' | 'warning' | 'danger'> = {
@@ -26,6 +28,8 @@ export const statusTone: Record<string, 'neutral' | 'success' | 'warning' | 'dan
   error: 'danger',
   deleted: 'neutral',
   queued: 'warning',
+  cancel_pending: 'warning',
   succeeded: 'success',
   failed: 'danger',
+  canceled: 'neutral',
 }

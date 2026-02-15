@@ -75,7 +75,7 @@ func declareTopology(ch *amqp.Channel) error {
 	}); err != nil {
 		return err
 	}
-	for _, key := range []string{"instance.create", "instance.update", "instance.delete"} {
+	for _, key := range []string{"instance.create", "instance.update", "instance.delete", "instance.cancel"} {
 		if err := ch.QueueBind(commandQueue, key, commandExchange, false, nil); err != nil {
 			return err
 		}
@@ -166,18 +166,21 @@ func (s *Server) handleDelivery(msg amqp.Delivery) {
 		cmd.CorrelationID = msg.CorrelationId
 	}
 
-	runningEvent := model.ResultEvent{
-		EventID:      uuid.NewString(),
-		TaskID:       cmd.TaskID,
-		RequestID:    cmd.RequestID,
-		InstanceID:   cmd.InstanceID,
-		Command:      normalizeCommand(cmd.Command),
-		Status:       "running",
-		AttemptCount: 1,
-		Timestamp:    nowISO(),
-	}
-	if err := s.publishResultEvent(runningEvent); err != nil {
-		log.Printf("failed to publish running result event: %v", err)
+	normalized := normalizeCommand(cmd.Command)
+	if normalized != "cancel" {
+		runningEvent := model.ResultEvent{
+			EventID:      uuid.NewString(),
+			TaskID:       cmd.TaskID,
+			RequestID:    cmd.RequestID,
+			InstanceID:   cmd.InstanceID,
+			Command:      normalized,
+			Status:       "running",
+			AttemptCount: 1,
+			Timestamp:    nowISO(),
+		}
+		if err := s.publishResultEvent(runningEvent); err != nil {
+			log.Printf("failed to publish running result event: %v", err)
+		}
 	}
 
 	response, attemptCount := s.manager.Handle(cmd)
@@ -186,7 +189,9 @@ func (s *Server) handleDelivery(msg amqp.Delivery) {
 	}
 
 	finalStatus := "failed"
-	if response.Success {
+	if response.Success && normalized == "cancel" {
+		finalStatus = "canceled"
+	} else if response.Success {
 		finalStatus = "succeeded"
 	}
 	finalEvent := model.ResultEvent{
@@ -194,7 +199,7 @@ func (s *Server) handleDelivery(msg amqp.Delivery) {
 		TaskID:       cmd.TaskID,
 		RequestID:    cmd.RequestID,
 		InstanceID:   cmd.InstanceID,
-		Command:      normalizeCommand(cmd.Command),
+		Command:      normalized,
 		Status:       finalStatus,
 		ErrorCode:    response.ErrorCode,
 		ErrorMessage: response.ErrorMessage,
