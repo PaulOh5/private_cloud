@@ -1,8 +1,9 @@
 # VM Private Cloud MVP
 
-This repository contains a two-service MSA MVP:
+This repository contains an MSA MVP with three services:
 - `main-api`: FastAPI + PostgreSQL (DDD/CQRS + repository + ports/adapters)
 - `vm-manager`: Go + QEMU worker controlled via RabbitMQ
+- `frontend`: React + TypeScript 운영 콘솔 (Nginx 정적 서빙, `/api` 프록시)
 
 ## Quick Project Overview (for new Codex sessions)
 - Goal: single-host VM private cloud MVP with async VM lifecycle orchestration.
@@ -29,11 +30,33 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 
 ## Quickstart
 1. `cp .env.example .env`
-2. If host ports conflict, override `POSTGRES_EXPOSE_PORT`, `RABBITMQ_EXPOSE_PORT`, `RABBITMQ_MGMT_EXPOSE_PORT` in `.env`.
+2. If host ports conflict, override exposed ports in `.env`:
+   - `POSTGRES_EXPOSE_PORT`, `RABBITMQ_EXPOSE_PORT`, `RABBITMQ_MGMT_EXPOSE_PORT`
+   - `MAIN_API_PORT`, `FRONTEND_PORT`
 3. `docker compose up --build`
-4. API docs: `http://localhost:8000/docs`
+4. Open:
+   - Frontend: `http://localhost:3000` (or `FRONTEND_PORT`)
+   - API docs (direct): `http://localhost:8000/docs`
+   - API docs (via frontend proxy): `http://localhost:3000/api/docs`
 
-## Services
+## Frontend guide (Korean UI)
+### Default account
+- `username`: `admin`
+- `password`: `admin1234`
+
+### First-login flow (for beginners)
+1. 로그인 후 `인스턴스` 화면에서 현재 VM 목록을 확인합니다.
+2. `인스턴스 생성` 버튼으로 VM 요청을 생성합니다.
+3. `작업 이력` 화면에서 `queued/running/succeeded/failed` 상태 변화를 확인합니다.
+4. 관리자 계정이면 `사용자 관리`에서 operator/viewer 계정을 분리 생성합니다.
+5. `감사 로그`에서 로그인/권한/리소스 작업 이벤트를 점검합니다.
+
+### RBAC behavior
+- `admin`: 전체 기능 (인스턴스/태스크/사용자/감사로그)
+- `operator`: 인스턴스/태스크 조회 + 생성/수정/삭제 요청
+- `viewer`: 인스턴스/태스크 조회 전용
+
+## Services and queues
 - Command exchange: `vm.commands`
 - Command queue: `vm.commands.q`
 - Result exchange: `vm.results`
@@ -62,13 +85,29 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 - `GET /tasks/{id}`
 
 All `/instances` and `/tasks` endpoints require `Authorization: Bearer <token>`.
-Default bootstrap account:
-- `username`: `admin`
-- `password`: `admin1234`
 
 ## State model
 - Instance: `creating_pending | updating_pending | deleting_pending | running | stopped | error | deleted`
 - Task: `queued | running | succeeded | failed`
+
+## Testing `frontend`
+### Install dependencies
+```bash
+cd frontend
+npm install
+```
+
+### Run tests
+```bash
+cd frontend
+npm run test
+```
+
+### Build
+```bash
+cd frontend
+npm run build
+```
 
 ## Testing `main-api`
 ### Prerequisites
