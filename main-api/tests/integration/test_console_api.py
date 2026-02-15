@@ -15,6 +15,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.config import get_settings
 
 postgres = pytest.importorskip("testcontainers.postgres")
+DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 class DummyVmProvisioningAdapter:
@@ -115,7 +116,7 @@ def _create_running_instance(client: TestClient, headers: dict[str, str]) -> str
     create_response = client.post(
         "/instances",
         headers=headers,
-        json={"name": "console-test", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={"tenant_id": DEFAULT_TENANT_ID, "name": "console-test", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
     )
     assert create_response.status_code == 202, create_response.text
     instance_id = create_response.json()["instance_id"]
@@ -154,7 +155,13 @@ def test_console_ticket_forbidden_for_viewer(api_client: TestClient):
     create_user = api_client.post(
         "/users",
         headers=admin_headers,
-        json={"username": username, "password": password, "role": "viewer", "is_active": True},
+        json={
+            "username": username,
+            "password": password,
+            "role": "viewer",
+            "tenant_id": DEFAULT_TENANT_ID,
+            "is_active": True,
+        },
     )
     assert create_user.status_code == 201, create_user.text
 

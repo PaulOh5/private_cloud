@@ -12,6 +12,7 @@ class ListTasksQuery:
     status: TaskStatus | None = None
     instance_id: UUID | None = None
     command: TaskCommand | None = None
+    tenant_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -31,5 +32,6 @@ class ListTasksHandler:
             status=query.status,
             instance_id=query.instance_id,
             command=query.command,
+            tenant_id=query.tenant_id,
         )
         return ListTasksResult(items=items, total=total)

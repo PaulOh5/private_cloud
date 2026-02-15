@@ -9,12 +9,15 @@ from sqlalchemy.orm import Session
 
 from app.domain.auth import RefreshToken, Role, User
 from app.domain.errors import ConflictError, NotFoundError
-from app.domain.models import AuditLog, Instance, InstanceTask, ResourceSpec
+from app.domain.models import AuditLog, Instance, InstanceTask, ResourceSpec, Tenant, TenantQuota, TenantUsage
 from app.ports.interfaces import (
     AuditLogRepository,
     InstanceReadRepository,
     InstanceRepository,
     RefreshTokenRepository,
+    TenantQuotaRepository,
+    TenantRepository,
+    TenantUsageReadPort,
     TaskRepository,
     UserRepository,
 )
@@ -23,6 +26,7 @@ from app.ports.interfaces import (
 def _to_instance(row) -> Instance:
     return Instance(
         id=row["id"],
+        tenant_id=row["tenant_id"],
         name=row["name"],
         resource_spec=ResourceSpec(cpu=row["cpu"], memory_mib=row["memory_mib"], disk_gib=row["disk_gib"]),
         status=row["status"],
@@ -62,6 +66,7 @@ def _to_user(row) -> User:
         username=row["username"],
         password_hash=row["password_hash"],
         role=row["role"],
+        tenant_id=row["tenant_id"],
         is_active=bool(row["is_active"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -83,6 +88,7 @@ def _to_refresh_token(row) -> RefreshToken:
 def _to_audit_log(row) -> AuditLog:
     return AuditLog(
         id=row["id"],
+        tenant_id=row["tenant_id"],
         actor_user_id=row["actor_user_id"],
         actor_username=row["actor_username"],
         action=row["action"],
@@ -93,6 +99,38 @@ def _to_audit_log(row) -> AuditLog:
         user_agent=row["user_agent"],
         metadata=row["metadata"] or {},
         created_at=row["created_at"],
+    )
+
+
+def _to_tenant(row) -> Tenant:
+    return Tenant(
+        id=row["id"],
+        key=row["key"],
+        name=row["name"],
+        is_active=bool(row["is_active"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _to_tenant_quota(row) -> TenantQuota:
+    return TenantQuota(
+        tenant_id=row["tenant_id"],
+        max_instances=int(row["max_instances"]),
+        max_cpu=int(row["max_cpu"]),
+        max_memory_mib=int(row["max_memory_mib"]),
+        max_disk_gib=int(row["max_disk_gib"]),
+        updated_at=row["updated_at"],
+    )
+
+
+def _to_tenant_usage(row) -> TenantUsage:
+    return TenantUsage(
+        tenant_id=row["tenant_id"],
+        used_instances=int(row["used_instances"]),
+        used_cpu=int(row["used_cpu"]),
+        used_memory_mib=int(row["used_memory_mib"]),
+        used_disk_gib=int(row["used_disk_gib"]),
     )
 
 
@@ -112,12 +150,12 @@ class PostgresInstanceRepository(InstanceRepository):
             text(
                 """
                 INSERT INTO instances (
-                    id, name, cpu, memory_mib, disk_gib,
+                    id, tenant_id, name, cpu, memory_mib, disk_gib,
                     status, ip_address, host_node, reserve_resources,
                     last_task_id, deleted_at, created_at, updated_at
                 )
                 VALUES (
-                    :id, :name, :cpu, :memory_mib, :disk_gib,
+                    :id, :tenant_id, :name, :cpu, :memory_mib, :disk_gib,
                     :status, :ip_address, :host_node, :reserve_resources,
                     :last_task_id, :deleted_at, :created_at, :updated_at
                 )
@@ -126,6 +164,7 @@ class PostgresInstanceRepository(InstanceRepository):
             ),
             {
                 "id": str(instance.id),
+                "tenant_id": str(instance.tenant_id),
                 "name": instance.name,
                 "cpu": instance.resource_spec.cpu,
                 "memory_mib": instance.resource_spec.memory_mib,
@@ -228,14 +267,26 @@ class PostgresInstanceReadRepository(InstanceReadRepository):
     def __init__(self, session: Session):
         self.session = session
 
-    def get(self, instance_id: UUID) -> Instance | None:
+    def get(self, instance_id: UUID, tenant_id: UUID | None = None) -> Instance | None:
+        conditions: list[str] = ["id = :id"]
+        params: dict[str, object] = {"id": str(instance_id)}
+        if tenant_id is not None:
+            conditions.append("tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
         row = self.session.execute(
-            text("SELECT * FROM instances WHERE id = :id"),
-            {"id": str(instance_id)},
+            text(f"SELECT * FROM instances WHERE {' AND '.join(conditions)}"),
+            params,
         ).mappings().first()
         return _to_instance(row) if row else None
 
-    def list(self, limit: int, offset: int, status: str | None, name: str | None) -> tuple[list[Instance], int]:
+    def list(
+        self,
+        limit: int,
+        offset: int,
+        status: str | None,
+        name: str | None,
+        tenant_id: UUID | None = None,
+    ) -> tuple[list[Instance], int]:
         conditions: list[str] = []
         params: dict[str, object] = {"limit": limit, "offset": offset}
         if status:
@@ -244,6 +295,9 @@ class PostgresInstanceReadRepository(InstanceReadRepository):
         if name:
             conditions.append("name ILIKE :name")
             params["name"] = f"%{name}%"
+        if tenant_id is not None:
+            conditions.append("tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -354,27 +408,33 @@ class PostgresTaskRepository(TaskRepository):
         status: str | None,
         instance_id: UUID | None,
         command: str | None,
+        tenant_id: UUID | None = None,
     ) -> tuple[list[InstanceTask], int]:
         conditions: list[str] = []
         params: dict[str, object] = {"limit": limit, "offset": offset}
         if status:
-            conditions.append("status = :status")
+            conditions.append("t.status = :status")
             params["status"] = status
         if instance_id:
-            conditions.append("instance_id = :instance_id")
+            conditions.append("t.instance_id = :instance_id")
             params["instance_id"] = str(instance_id)
         if command:
-            conditions.append("command = :command")
+            conditions.append("t.command = :command")
             params["command"] = command
+        if tenant_id is not None:
+            conditions.append("i.tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
         rows = self.session.execute(
             text(
                 f"""
-                SELECT * FROM instance_tasks
+                SELECT t.*
+                FROM instance_tasks t
+                JOIN instances i ON i.id = t.instance_id
                 {where_clause}
-                ORDER BY created_at DESC
+                ORDER BY t.created_at DESC
                 LIMIT :limit OFFSET :offset
                 """
             ),
@@ -382,7 +442,14 @@ class PostgresTaskRepository(TaskRepository):
         ).mappings().all()
 
         count_row = self.session.execute(
-            text(f"SELECT COUNT(*) AS total FROM instance_tasks {where_clause}"),
+            text(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM instance_tasks t
+                JOIN instances i ON i.id = t.instance_id
+                {where_clause}
+                """
+            ),
             params,
         ).mappings().one()
 
@@ -573,13 +640,20 @@ class PostgresUserRepository(UserRepository):
     def __init__(self, session: Session):
         self.session = session
 
-    def create_user(self, username: str, password_hash: str, role: Role, is_active: bool = True) -> User:
+    def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        role: Role,
+        is_active: bool = True,
+        tenant_id: UUID | None = None,
+    ) -> User:
         now = datetime.now(timezone.utc)
         row = self.session.execute(
             text(
                 """
-                INSERT INTO users (id, username, password_hash, role, is_active, created_at, updated_at)
-                VALUES (:id, :username, :password_hash, :role, :is_active, :created_at, :updated_at)
+                INSERT INTO users (id, username, password_hash, role, tenant_id, is_active, created_at, updated_at)
+                VALUES (:id, :username, :password_hash, :role, :tenant_id, :is_active, :created_at, :updated_at)
                 ON CONFLICT (username) DO NOTHING
                 RETURNING *
                 """
@@ -589,6 +663,7 @@ class PostgresUserRepository(UserRepository):
                 "username": username,
                 "password_hash": password_hash,
                 "role": role,
+                "tenant_id": str(tenant_id) if tenant_id else None,
                 "is_active": is_active,
                 "created_at": now,
                 "updated_at": now,
@@ -612,9 +687,15 @@ class PostgresUserRepository(UserRepository):
         ).mappings().first()
         return _to_user(row) if row else None
 
-    def ensure_user(self, username: str, password_hash: str, role: Role) -> User:
+    def ensure_user(self, username: str, password_hash: str, role: Role, tenant_id: UUID | None = None) -> User:
         try:
-            return self.create_user(username=username, password_hash=password_hash, role=role, is_active=True)
+            return self.create_user(
+                username=username,
+                password_hash=password_hash,
+                role=role,
+                is_active=True,
+                tenant_id=tenant_id,
+            )
         except ConflictError:
             pass
         existing = self.get_by_username(username)
@@ -629,6 +710,7 @@ class PostgresUserRepository(UserRepository):
         role: Role | None,
         is_active: bool | None,
         username: str | None,
+        tenant_id: UUID | None = None,
     ) -> tuple[list[User], int]:
         conditions: list[str] = []
         params: dict[str, object] = {"limit": limit, "offset": offset}
@@ -641,6 +723,9 @@ class PostgresUserRepository(UserRepository):
         if username:
             conditions.append("username ILIKE :username")
             params["username"] = f"%{username}%"
+        if tenant_id is not None:
+            conditions.append("tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         rows = self.session.execute(
@@ -666,12 +751,18 @@ class PostgresUserRepository(UserRepository):
         role: Role | None = None,
         is_active: bool | None = None,
         password_hash: str | None = None,
+        tenant_id: UUID | None = None,
     ) -> User:
         row = self.session.execute(
             text(
                 """
                 UPDATE users
                 SET role = COALESCE(:role, role),
+                    tenant_id = CASE
+                        WHEN COALESCE(:role, role) = 'admin' THEN NULL
+                        WHEN CAST(:tenant_id AS UUID) IS NOT NULL THEN CAST(:tenant_id AS UUID)
+                        ELSE tenant_id
+                    END,
                     is_active = COALESCE(:is_active, is_active),
                     password_hash = COALESCE(:password_hash, password_hash),
                     updated_at = :updated_at
@@ -682,6 +773,7 @@ class PostgresUserRepository(UserRepository):
             {
                 "id": str(user_id),
                 "role": role,
+                "tenant_id": str(tenant_id) if tenant_id else None,
                 "is_active": is_active,
                 "password_hash": password_hash,
                 "updated_at": datetime.now(timezone.utc),
@@ -790,6 +882,7 @@ class PostgresAuditLogRepository(AuditLogRepository):
     def create(
         self,
         *,
+        tenant_id: UUID | None,
         actor_user_id: UUID | None,
         actor_username: str | None,
         action: str,
@@ -804,11 +897,11 @@ class PostgresAuditLogRepository(AuditLogRepository):
             text(
                 """
                 INSERT INTO audit_logs (
-                    id, actor_user_id, actor_username, action, target_type, target_id,
+                    id, tenant_id, actor_user_id, actor_username, action, target_type, target_id,
                     request_id, ip_address, user_agent, metadata, created_at
                 )
                 VALUES (
-                    :id, :actor_user_id, :actor_username, :action, :target_type, :target_id,
+                    :id, :tenant_id, :actor_user_id, :actor_username, :action, :target_type, :target_id,
                     :request_id, :ip_address, :user_agent, CAST(:metadata AS JSONB), :created_at
                 )
                 RETURNING *
@@ -816,6 +909,7 @@ class PostgresAuditLogRepository(AuditLogRepository):
             ),
             {
                 "id": str(uuid4()),
+                "tenant_id": str(tenant_id) if tenant_id else None,
                 "actor_user_id": str(actor_user_id) if actor_user_id else None,
                 "actor_username": actor_username,
                 "action": action,
@@ -846,6 +940,7 @@ class PostgresAuditLogRepository(AuditLogRepository):
         action: str | None,
         target_type: str | None,
         request_id: UUID | None,
+        tenant_id: UUID | None = None,
     ) -> tuple[list[AuditLog], int]:
         conditions: list[str] = []
         params: dict[str, object] = {"limit": limit, "offset": offset}
@@ -861,6 +956,9 @@ class PostgresAuditLogRepository(AuditLogRepository):
         if request_id:
             conditions.append("request_id = :request_id")
             params["request_id"] = str(request_id)
+        if tenant_id is not None:
+            conditions.append("tenant_id = :tenant_id")
+            params["tenant_id"] = str(tenant_id)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         rows = self.session.execute(
@@ -880,3 +978,207 @@ class PostgresAuditLogRepository(AuditLogRepository):
             params,
         ).mappings().one()
         return ([_to_audit_log(row) for row in rows], int(count_row["total"]))
+
+
+class PostgresTenantRepository(TenantRepository):
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(self, *, key: str, name: str, is_active: bool = True) -> Tenant:
+        now = datetime.now(timezone.utc)
+        row = self.session.execute(
+            text(
+                """
+                INSERT INTO tenants (id, key, name, is_active, created_at, updated_at)
+                VALUES (:id, :key, :name, :is_active, :created_at, :updated_at)
+                ON CONFLICT (key) DO NOTHING
+                RETURNING *
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "key": key,
+                "name": name,
+                "is_active": is_active,
+                "created_at": now,
+                "updated_at": now,
+            },
+        ).mappings().first()
+        if not row:
+            raise ConflictError(f"tenant key {key} already exists")
+        return _to_tenant(row)
+
+    def get(self, tenant_id: UUID) -> Tenant | None:
+        row = self.session.execute(
+            text("SELECT * FROM tenants WHERE id = :id"),
+            {"id": str(tenant_id)},
+        ).mappings().first()
+        return _to_tenant(row) if row else None
+
+    def get_by_key(self, key: str) -> Tenant | None:
+        row = self.session.execute(
+            text("SELECT * FROM tenants WHERE key = :key"),
+            {"key": key},
+        ).mappings().first()
+        return _to_tenant(row) if row else None
+
+    def list(self, *, limit: int, offset: int, is_active: bool | None) -> tuple[list[Tenant], int]:
+        conditions: list[str] = []
+        params: dict[str, object] = {"limit": limit, "offset": offset}
+        if is_active is not None:
+            conditions.append("is_active = :is_active")
+            params["is_active"] = is_active
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        rows = self.session.execute(
+            text(
+                f"""
+                SELECT *
+                FROM tenants
+                {where_clause}
+                ORDER BY created_at DESC
+                LIMIT :limit OFFSET :offset
+                """
+            ),
+            params,
+        ).mappings().all()
+        count_row = self.session.execute(
+            text(f"SELECT COUNT(*) AS total FROM tenants {where_clause}"),
+            params,
+        ).mappings().one()
+        return ([_to_tenant(row) for row in rows], int(count_row["total"]))
+
+    def update(self, tenant_id: UUID, *, name: str | None = None, is_active: bool | None = None) -> Tenant:
+        row = self.session.execute(
+            text(
+                """
+                UPDATE tenants
+                SET name = COALESCE(:name, name),
+                    is_active = COALESCE(:is_active, is_active),
+                    updated_at = :updated_at
+                WHERE id = :id
+                RETURNING *
+                """
+            ),
+            {
+                "id": str(tenant_id),
+                "name": name,
+                "is_active": is_active,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        ).mappings().first()
+        if not row:
+            raise NotFoundError(f"tenant {tenant_id} not found")
+        return _to_tenant(row)
+
+    def delete(self, tenant_id: UUID) -> None:
+        row = self.session.execute(
+            text("DELETE FROM tenants WHERE id = :id RETURNING id"),
+            {"id": str(tenant_id)},
+        ).mappings().first()
+        if not row:
+            raise NotFoundError(f"tenant {tenant_id} not found")
+
+    def count_active_users(self, tenant_id: UUID) -> int:
+        row = self.session.execute(
+            text(
+                """
+                SELECT COUNT(*) AS total
+                FROM users
+                WHERE tenant_id = :tenant_id
+                  AND is_active = true
+                """
+            ),
+            {"tenant_id": str(tenant_id)},
+        ).mappings().one()
+        return int(row["total"])
+
+    def count_active_instances(self, tenant_id: UUID) -> int:
+        row = self.session.execute(
+            text(
+                """
+                SELECT COUNT(*) AS total
+                FROM instances
+                WHERE tenant_id = :tenant_id
+                  AND status <> 'deleted'
+                """
+            ),
+            {"tenant_id": str(tenant_id)},
+        ).mappings().one()
+        return int(row["total"])
+
+
+class PostgresTenantQuotaRepository(TenantQuotaRepository):
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get(self, tenant_id: UUID) -> TenantQuota | None:
+        row = self.session.execute(
+            text("SELECT * FROM tenant_quotas WHERE tenant_id = :tenant_id"),
+            {"tenant_id": str(tenant_id)},
+        ).mappings().first()
+        return _to_tenant_quota(row) if row else None
+
+    def upsert(
+        self,
+        tenant_id: UUID,
+        *,
+        max_instances: int,
+        max_cpu: int,
+        max_memory_mib: int,
+        max_disk_gib: int,
+    ) -> TenantQuota:
+        row = self.session.execute(
+            text(
+                """
+                INSERT INTO tenant_quotas (
+                    tenant_id, max_instances, max_cpu, max_memory_mib, max_disk_gib, updated_at
+                )
+                VALUES (
+                    :tenant_id, :max_instances, :max_cpu, :max_memory_mib, :max_disk_gib, :updated_at
+                )
+                ON CONFLICT (tenant_id) DO UPDATE
+                SET max_instances = EXCLUDED.max_instances,
+                    max_cpu = EXCLUDED.max_cpu,
+                    max_memory_mib = EXCLUDED.max_memory_mib,
+                    max_disk_gib = EXCLUDED.max_disk_gib,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING *
+                """
+            ),
+            {
+                "tenant_id": str(tenant_id),
+                "max_instances": max_instances,
+                "max_cpu": max_cpu,
+                "max_memory_mib": max_memory_mib,
+                "max_disk_gib": max_disk_gib,
+                "updated_at": datetime.now(timezone.utc),
+            },
+        ).mappings().one()
+        return _to_tenant_quota(row)
+
+
+class PostgresTenantUsageReadRepository(TenantUsageReadPort):
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_usage(self, tenant_id: UUID) -> TenantUsage:
+        row = self.session.execute(
+            text(
+                """
+                SELECT
+                    CAST(:tenant_id AS UUID) AS tenant_id,
+                    COALESCE(v.used_instances, 0) AS used_instances,
+                    COALESCE(v.used_cpu, 0) AS used_cpu,
+                    COALESCE(v.used_memory_mib, 0) AS used_memory_mib,
+                    COALESCE(v.used_disk_gib, 0) AS used_disk_gib
+                FROM tenants t
+                LEFT JOIN tenant_resource_usage_view v ON v.tenant_id = t.id
+                WHERE t.id = :tenant_id
+                """
+            ),
+            {"tenant_id": str(tenant_id)},
+        ).mappings().first()
+        if not row:
+            raise NotFoundError(f"tenant {tenant_id} not found")
+        return _to_tenant_usage(row)

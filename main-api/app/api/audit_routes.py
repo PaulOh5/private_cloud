@@ -17,6 +17,7 @@ audit_router = APIRouter(prefix="/audit-logs", tags=["audit-logs"])
 def _to_response(log) -> AuditLogResponse:
     return AuditLogResponse(
         id=log.id,
+        tenant_id=log.tenant_id,
         actor_user_id=log.actor_user_id,
         actor_username=log.actor_username,
         action=log.action,
@@ -40,6 +41,7 @@ def list_audit_logs(
     action: str | None = Query(default=None),
     target_type: str | None = Query(default=None),
     request_id: UUID | None = Query(default=None),
+    tenant_id: UUID | None = Query(default=None),
 ):
     repo = PostgresAuditLogRepository(session)
     items, total = repo.list(
@@ -49,6 +51,7 @@ def list_audit_logs(
         action=action,
         target_type=target_type,
         request_id=request_id,
+        tenant_id=tenant_id,
     )
     return ListAuditLogsResponse(
         items=[_to_response(item) for item in items],

@@ -2,13 +2,14 @@ import logging
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from app.adapters.postgres import PostgresUserRepository
+from app.adapters.postgres import PostgresTenantQuotaRepository, PostgresUserRepository
 from app.adapters.rabbitmq_image_sync_rpc import RabbitMqVmImageSyncRpcAdapter
 from app.adapters.rabbitmq_result_consumer import RabbitMqVmResultConsumer
 from app.adapters.rabbitmq_rpc import RabbitMqVmProvisioningAdapter
@@ -17,6 +18,7 @@ from app.adapters.stale_task_monitor import StaleTaskMonitor
 from app.api.auth_routes import auth_router
 from app.api.audit_routes import audit_router
 from app.api.routes import image_router, instance_router, legacy_image_router, task_router
+from app.api.tenant_routes import tenant_router
 from app.api.user_routes import role_router, user_router
 from app.application.services.vm_image_catalog import load_vm_image_catalog
 from app.config import get_settings
@@ -25,6 +27,9 @@ from app.infra.db import apply_schema, build_engine, build_session_factory
 from app.security import hash_password
 
 logger = logging.getLogger(__name__)
+DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+DEFAULT_TENANT_KEY = "default"
+DEFAULT_TENANT_NAME = "Default Tenant"
 
 
 def _run_with_db_retry(description: str, fn: Callable[[], None], attempts: int = 20, delay_seconds: float = 1.0) -> None:
@@ -73,6 +78,23 @@ def create_app() -> FastAPI:
             session.execute(
                 text(
                     """
+                INSERT INTO tenants (id, key, name, is_active, created_at, updated_at)
+                VALUES (:id, :key, :name, true, NOW(), NOW())
+                ON CONFLICT (key) DO UPDATE
+                  SET name = EXCLUDED.name,
+                      is_active = true,
+                      updated_at = NOW()
+                    """
+                ),
+                {
+                    "id": DEFAULT_TENANT_ID,
+                    "key": DEFAULT_TENANT_KEY,
+                    "name": DEFAULT_TENANT_NAME,
+                },
+            )
+            session.execute(
+                text(
+                    """
                 INSERT INTO resource_capacity (host_node, total_cpu, total_memory_mib, total_disk_gib)
                 VALUES (:host_node, :total_cpu, :total_memory_mib, :total_disk_gib)
                 ON CONFLICT (host_node) DO UPDATE
@@ -88,10 +110,48 @@ def create_app() -> FastAPI:
                     "total_disk_gib": settings.total_disk_gib,
                 },
             )
+            PostgresTenantQuotaRepository(session).upsert(
+                tenant_id=UUID(DEFAULT_TENANT_ID),
+                max_instances=settings.total_instances,
+                max_cpu=settings.total_cpu,
+                max_memory_mib=settings.total_memory_mib,
+                max_disk_gib=settings.total_disk_gib,
+            )
+            session.execute(
+                text(
+                    """
+                    UPDATE instances
+                    SET tenant_id = :tenant_id
+                    WHERE tenant_id IS NULL
+                    """
+                ),
+                {"tenant_id": DEFAULT_TENANT_ID},
+            )
+            session.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET tenant_id = :tenant_id
+                    WHERE role IN ('operator', 'viewer')
+                      AND tenant_id IS NULL
+                    """
+                ),
+                {"tenant_id": DEFAULT_TENANT_ID},
+            )
+            session.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET tenant_id = NULL
+                    WHERE role = 'admin'
+                    """
+                ),
+            )
             PostgresUserRepository(session).ensure_user(
                 username=settings.bootstrap_admin_username,
                 password_hash=hash_password(settings.bootstrap_admin_password),
                 role=settings.bootstrap_admin_role,
+                tenant_id=None,
             )
             session.commit()
 
@@ -121,6 +181,7 @@ def create_app() -> FastAPI:
     app.include_router(audit_router)
     app.include_router(role_router)
     app.include_router(user_router)
+    app.include_router(tenant_router)
     app.include_router(image_router)
     app.include_router(legacy_image_router)
     app.include_router(instance_router)
@@ -131,6 +192,9 @@ def create_app() -> FastAPI:
         mapping = {
             "VALIDATION_ERROR": 400,
             "CAPACITY_EXCEEDED": 409,
+            "QUOTA_EXCEEDED": 409,
+            "QUOTA_CONFLICT": 409,
+            "TENANT_INACTIVE": 403,
             "VM_NOT_FOUND": 404,
             "CONFLICT": 409,
             "QEMU_ERROR": 502,

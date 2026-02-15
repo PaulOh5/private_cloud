@@ -12,6 +12,7 @@ from sqlalchemy import text
 from app.config import get_settings
 
 postgres = pytest.importorskip("testcontainers.postgres")
+DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 class DummyVmProvisioningAdapter:
@@ -135,7 +136,13 @@ def test_user_management_and_rbac(api_client: TestClient):
     create_resp = api_client.post(
         "/users",
         headers=admin_headers,
-        json={"username": username, "password": password, "role": "operator", "is_active": True},
+        json={
+            "username": username,
+            "password": password,
+            "role": "operator",
+            "tenant_id": DEFAULT_TENANT_ID,
+            "is_active": True,
+        },
     )
     assert create_resp.status_code == 201, create_resp.text
     user_id = create_resp.json()["id"]
@@ -161,7 +168,13 @@ def test_refresh_token_revoked_after_admin_user_update(api_client: TestClient):
     create_resp = api_client.post(
         "/users",
         headers=admin_headers,
-        json={"username": username, "password": password, "role": "viewer", "is_active": True},
+        json={
+            "username": username,
+            "password": password,
+            "role": "viewer",
+            "tenant_id": DEFAULT_TENANT_ID,
+            "is_active": True,
+        },
     )
     assert create_resp.status_code == 201, create_resp.text
     user_id = create_resp.json()["id"]
@@ -193,7 +206,11 @@ def test_cannot_deactivate_self_or_last_admin(api_client: TestClient):
     deactivate_self = api_client.delete(f"/users/{admin_id}", headers=admin_headers)
     assert deactivate_self.status_code == 409
 
-    demote_last_admin = api_client.patch(f"/users/{admin_id}", headers=admin_headers, json={"role": "viewer"})
+    demote_last_admin = api_client.patch(
+        f"/users/{admin_id}",
+        headers=admin_headers,
+        json={"role": "viewer", "tenant_id": DEFAULT_TENANT_ID},
+    )
     assert demote_last_admin.status_code == 409
 
 
@@ -206,7 +223,13 @@ def test_audit_logs_admin_only_and_contains_user_create_event(api_client: TestCl
     create_resp = api_client.post(
         "/users",
         headers=admin_headers,
-        json={"username": username, "password": "audit-password-1", "role": "viewer", "is_active": True},
+        json={
+            "username": username,
+            "password": "audit-password-1",
+            "role": "viewer",
+            "tenant_id": DEFAULT_TENANT_ID,
+            "is_active": True,
+        },
     )
     assert create_resp.status_code == 201, create_resp.text
     created_user_id = create_resp.json()["id"]
@@ -253,7 +276,7 @@ def test_retry_api_returns_202_and_creates_new_task(api_client: TestClient):
     create_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"name": "retry-api-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={"tenant_id": DEFAULT_TENANT_ID, "name": "retry-api-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
     )
     assert create_resp.status_code == 202, create_resp.text
     original_task_id = create_resp.json()["task_id"]
@@ -313,7 +336,13 @@ def test_cancel_queued_task_sets_terminal_canceled(api_client: TestClient):
     create_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"name": "cancel-queued-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": DEFAULT_TENANT_ID,
+            "name": "cancel-queued-vm",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert create_resp.status_code == 202, create_resp.text
     task_id = create_resp.json()["task_id"]
@@ -339,7 +368,13 @@ def test_cancel_running_task_sets_cancel_pending(api_client: TestClient):
     create_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"name": "cancel-running-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": DEFAULT_TENANT_ID,
+            "name": "cancel-running-vm",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert create_resp.status_code == 202, create_resp.text
     task_id = create_resp.json()["task_id"]
@@ -380,7 +415,13 @@ def test_retry_cancel_audit_logs_are_written(api_client: TestClient):
     create_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"name": "audit-retry-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": DEFAULT_TENANT_ID,
+            "name": "audit-retry-vm",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert create_resp.status_code == 202, create_resp.text
     original_task_id = create_resp.json()["task_id"]

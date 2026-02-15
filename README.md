@@ -10,6 +10,10 @@ This repository contains an MSA MVP with three services:
 - Services:
   - `main-api` (Python/FastAPI/PostgreSQL): REST API, DDD/CQRS, auth/RBAC, task tracking, audit logs.
   - `vm-manager` (Go/QEMU): executes VM create/update/delete + network setup.
+- Tenancy/Quota:
+  - Multi-tenant model with `tenants` + per-tenant hard quota (`instances/cpu/memory/disk`).
+  - Quota is enforced on `create/update/retry`.
+  - `admin` can operate across tenants, `operator/viewer` are tenant-scoped.
 - Communication:
   - Command path: `main-api -> RabbitMQ(vm.commands) -> vm-manager`
   - Result path: `vm-manager -> RabbitMQ(vm.results) -> main-api` background consumer
@@ -22,7 +26,7 @@ This repository contains an MSA MVP with three services:
   - User/role management APIs and audit log APIs are included.
   - VM web console is ticket-based (5 min TTL, single-use) and limited to `admin/operator`.
 - Persistence:
-  - PostgreSQL stores instances, tasks, users, refresh tokens, audit logs.
+  - PostgreSQL stores tenants, tenant quotas, instances, tasks, users, refresh tokens, audit logs.
 - Deployment baseline:
   - `docker-compose` for `main-api`, `postgres`, `rabbitmq`
   - `vm-manager` runs with host-level privileges for QEMU/network operations.
@@ -36,6 +40,7 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 2. If host ports conflict, override exposed ports in `.env`:
    - `POSTGRES_EXPOSE_PORT`, `RABBITMQ_EXPOSE_PORT`, `RABBITMQ_MGMT_EXPOSE_PORT`
    - `MAIN_API_PORT`, `FRONTEND_PORT`
+   - Host capacity baseline: `TOTAL_CPU`, `TOTAL_MEMORY_MIB`, `TOTAL_DISK_GIB`, `TOTAL_INSTANCES`
    - Optional noVNC console: `CONSOLE_TICKET_TTL_SECONDS` (default `300`), `CONSOLE_PROXY_HOST` (default `host.docker.internal`), `CONSOLE_VNC_PORT_BASE` (default `20000`), `CONSOLE_VNC_PORT_SPAN` (default `40000`)
    - Optional stale-task recovery: `TASK_STALE_QUEUED_TIMEOUT_SECONDS` (default `180`), `TASK_STALE_SWEEP_INTERVAL_SECONDS` (default `15`, set `0` to disable)
    - Optional VM egress interface override: `VM_EGRESS_INTERFACE` (default route interface is auto-detected)
@@ -66,9 +71,9 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 6. `감사 로그`에서 로그인/권한/리소스 작업 이벤트를 점검합니다.
 
 ### RBAC behavior
-- `admin`: 전체 기능 (인스턴스/태스크/사용자/감사로그)
-- `operator`: 인스턴스/태스크 조회 + 생성/수정/삭제 요청 + VM 웹 콘솔
-- `viewer`: 인스턴스/태스크 조회 전용
+- `admin`: 전체 기능 + cross-tenant 운영 (`/tenants` API 포함)
+- `operator`: 자기 tenant 인스턴스/태스크 조회 + 생성/수정/삭제 요청 + VM 웹 콘솔
+- `viewer`: 자기 tenant 인스턴스/태스크 조회 전용
 
 ## Services and queues
 - Command exchange: `vm.commands`
@@ -88,24 +93,37 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 - `POST /users` (admin)
 - `PATCH /users/{id}` (admin)
 - `DELETE /users/{id}` (admin, soft deactivate)
+- `POST /tenants` (admin)
+- `GET /tenants` (admin)
+- `GET /tenants/{id}` (admin)
+- `PATCH /tenants/{id}` (admin)
+- `PATCH /tenants/{id}/quota` (admin)
+- `GET /tenants/{id}/usage` (admin)
+- `DELETE /tenants/{id}` (admin, empty tenant only)
 - `GET /audit-logs` (admin)
 - `GET /audit-logs/{id}` (admin)
 - `GET /images` (viewer/operator/admin)
 - `POST /images/sync` (admin, sync/prefetch image cache)
 - `POST /instances` -> `202 + task_id`
+  - request field: `tenant_id` (admin required, operator/viewer server-enforced to own tenant)
   - optional request field: `image_id` (if omitted, vm-manager default image is used)
 - `PUT /instances/{id}` -> `202 + task_id`
 - `DELETE /instances/{id}` -> `202 + task_id`
-- `GET /instances`
+- `GET /instances` (admin can filter by `tenant_id`)
 - `GET /instances/{id}`
 - `POST /instances/{id}/console-ticket` (operator/admin)
 - `WS /instances/{id}/console/ws?ticket=...` (single-use ticket required)
-- `GET /tasks`
+- `GET /tasks` (admin can filter by `tenant_id`)
 - `GET /tasks/{id}`
 - `POST /tasks/{id}/retry` -> `202 + new task_id`
 - `POST /tasks/{id}/cancel` -> `202 + cancel_pending|canceled`
 
 All `/images`, `/instances`, and `/tasks` endpoints require `Authorization: Bearer <token>`.
+
+## Breaking changes (tenant phase)
+- `POST /instances`: `admin` must provide `tenant_id`.
+- `POST /users`: `operator/viewer` creation requires `tenant_id`; `admin` must not have `tenant_id`.
+- `PATCH /users/{id}`: role/tenant consistency is enforced (`admin -> tenant_id=null`, non-admin -> tenant_id required).
 
 ## Web console notes (noVNC)
 - Designed for single-host `docker-compose` PoC.

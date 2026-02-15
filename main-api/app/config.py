@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     total_cpu: int = 32
     total_memory_mib: int = 131072
     total_disk_gib: int = 2000
+    total_instances: int = 1000
 
     vm_command_timeout_seconds: int = 120
     task_stale_queued_timeout_seconds: int = 180

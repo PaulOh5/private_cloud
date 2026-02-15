@@ -13,6 +13,8 @@ from app.ports.interfaces import (
     InstanceRepository,
     ResourceAccountingPort,
     TaskRepository,
+    TenantQuotaAccountingPort,
+    TenantQuotaCheckInput,
     VmProvisioningPort,
 )
 
@@ -29,11 +31,13 @@ class RetryTaskHandler:
         task_repository: TaskRepository,
         provisioning: VmProvisioningPort,
         accounting: ResourceAccountingPort,
+        quota_accounting: TenantQuotaAccountingPort | None = None,
     ):
         self.write_repository = write_repository
         self.task_repository = task_repository
         self.provisioning = provisioning
         self.accounting = accounting
+        self.quota_accounting = quota_accounting
 
     def handle(self, command: RetryTaskCommand) -> TaskAccepted:
         source_task = self.task_repository.get_for_update(command.task_id)
@@ -52,6 +56,16 @@ class RetryTaskHandler:
 
         host_node = str(source_task.request_payload.get("host_node") or instance.host_node)
         requested = self._requested_spec(source_task, instance.resource_spec)
+        if self.quota_accounting is not None and source_task.command in {"create", "update"}:
+            self.quota_accounting.assert_quota(
+                TenantQuotaCheckInput(
+                    tenant_id=instance.tenant_id,
+                    current=instance.resource_spec,
+                    requested=requested,
+                    current_reserved=instance.reserve_resources,
+                    requested_reserved=True,
+                )
+            )
         if source_task.command == "create":
             self.accounting.assert_capacity(
                 CapacityCheckInput(host_node=host_node, current=None, requested=requested)

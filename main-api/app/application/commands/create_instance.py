@@ -11,6 +11,8 @@ from app.ports.interfaces import (
     InstanceRepository,
     ResourceAccountingPort,
     TaskRepository,
+    TenantQuotaAccountingPort,
+    TenantQuotaCheckInput,
     VmProvisioningPort,
 )
 
@@ -23,6 +25,7 @@ class CreateInstanceCommand:
     name: str | None
     host_node: str
     image_id: str | None = None
+    tenant_id: UUID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 class CreateInstanceHandler:
@@ -32,15 +35,28 @@ class CreateInstanceHandler:
         task_repository: TaskRepository,
         provisioning: VmProvisioningPort,
         accounting: ResourceAccountingPort,
+        quota_accounting: TenantQuotaAccountingPort | None = None,
     ):
         self.write_repository = write_repository
         self.task_repository = task_repository
         self.provisioning = provisioning
         self.accounting = accounting
+        self.quota_accounting = quota_accounting
 
     def handle(self, command: CreateInstanceCommand) -> TaskAccepted:
         spec = ResourceSpec(cpu=command.cpu, memory_mib=command.memory_mib, disk_gib=command.disk_gib)
         spec.validate()
+
+        if self.quota_accounting is not None:
+            self.quota_accounting.assert_quota(
+                TenantQuotaCheckInput(
+                    tenant_id=command.tenant_id,
+                    current=None,
+                    requested=spec,
+                    current_reserved=False,
+                    requested_reserved=True,
+                )
+            )
 
         self.accounting.assert_capacity(
             CapacityCheckInput(host_node=command.host_node, current=None, requested=spec)
@@ -53,6 +69,7 @@ class CreateInstanceHandler:
 
         instance = Instance(
             id=UUID(str(instance_id)),
+            tenant_id=command.tenant_id,
             name=command.name,
             resource_spec=spec,
             status="creating_pending",
@@ -78,6 +95,7 @@ class CreateInstanceHandler:
                 "memory_mib": spec.memory_mib,
                 "disk_gib": spec.disk_gib,
                 "host_node": command.host_node,
+                "tenant_id": str(command.tenant_id),
                 **({"image_id": command.image_id} if command.image_id else {}),
             },
             result_payload=None,

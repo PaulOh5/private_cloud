@@ -46,6 +46,7 @@ class Instance:
     deleted_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    tenant_id: UUID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 @dataclass
@@ -80,3 +81,33 @@ class AuditLog:
     user_agent: str | None
     metadata: dict[str, Any]
     created_at: datetime
+    tenant_id: UUID | None = None
+
+
+@dataclass
+class Tenant:
+    id: UUID
+    key: str
+    name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
+class TenantQuota:
+    tenant_id: UUID
+    max_instances: int
+    max_cpu: int
+    max_memory_mib: int
+    max_disk_gib: int
+    updated_at: datetime
+
+
+@dataclass
+class TenantUsage:
+    tenant_id: UUID
+    used_instances: int
+    used_cpu: int
+    used_memory_mib: int
+    used_disk_gib: int

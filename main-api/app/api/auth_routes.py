@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.adapters.postgres import PostgresRefreshTokenRepository, PostgresUserRepository
+from app.adapters.postgres import PostgresRefreshTokenRepository, PostgresTenantRepository, PostgresUserRepository
 from app.api.audit import write_audit_log
 from app.api.dependencies import get_current_user, get_session
 from app.api.schemas import AccessTokenResponse, CurrentUserResponse, LoginRequest, RefreshTokenRequest
@@ -45,6 +45,16 @@ def _issue_tokens(request: Request, user: User, session: Session) -> AccessToken
     )
 
 
+def _ensure_login_allowed(user: User, session: Session) -> None:
+    if user.role == "admin":
+        return
+    if user.tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="tenant is inactive")
+    tenant = PostgresTenantRepository(session).get(user.tenant_id)
+    if not tenant or not tenant.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="tenant is inactive")
+
+
 @auth_router.post("/login", response_model=AccessTokenResponse)
 def login(body: LoginRequest, request: Request, session: Session = Depends(get_session)):
     user_repo = PostgresUserRepository(session)
@@ -73,6 +83,7 @@ def login(body: LoginRequest, request: Request, session: Session = Depends(get_s
         )
         session.commit()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="inactive user")
+    _ensure_login_allowed(user, session)
 
     response = _issue_tokens(request, user, session)
     write_audit_log(
@@ -137,6 +148,7 @@ def refresh_token(body: RefreshTokenRequest, request: Request, session: Session 
         )
         session.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token")
+    _ensure_login_allowed(user, session)
     if str(user.id) != str(payload.get("sub")):
         write_audit_log(
             session=session,
@@ -194,5 +206,6 @@ def me(current_user: User = Depends(get_current_user)):
         id=current_user.id,
         username=current_user.username,
         role=current_user.role,
+        tenant_id=current_user.tenant_id,
         is_active=current_user.is_active,
     )

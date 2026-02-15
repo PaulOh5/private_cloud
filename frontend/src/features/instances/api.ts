@@ -6,9 +6,11 @@ export interface ListInstancesParams {
   offset: number
   status?: string
   name?: string
+  tenant_id?: string
 }
 
 export interface CreateInstancePayload {
+  tenant_id?: string
   name?: string
   cpu: number
   memory_mib: number

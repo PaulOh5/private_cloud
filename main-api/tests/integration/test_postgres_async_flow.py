@@ -21,6 +21,7 @@ from app.infra.db import apply_schema
 from app.security import hash_password
 
 postgres = pytest.importorskip("testcontainers.postgres")
+DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 class DummyProvisioning:
@@ -156,6 +157,7 @@ def test_refresh_token_repository_create_and_revoke(session_factory):
             username="integration-auth-user",
             password_hash=hash_password("integration-pass"),
             role="viewer",
+            tenant_id=UUID(DEFAULT_TENANT_ID),
         )
         token_hash = "abc123hash"
         created = refresh_tokens.create(
@@ -183,6 +185,7 @@ def test_user_repository_create_list_update_and_count_admins(session_factory):
             password_hash=hash_password("integration-pass-2"),
             role="operator",
             is_active=True,
+            tenant_id=UUID(DEFAULT_TENANT_ID),
         )
         listed, total = users.list_users(
             limit=50,
@@ -216,6 +219,7 @@ def test_refresh_token_repository_revoke_all_for_user(session_factory):
             username="integration-auth-user-revoke-all",
             password_hash=hash_password("integration-pass-3"),
             role="viewer",
+            tenant_id=UUID(DEFAULT_TENANT_ID),
         )
         refresh_tokens.create(
             user_id=user.id,
