@@ -4,6 +4,26 @@ This repository contains a two-service MSA MVP:
 - `main-api`: FastAPI + PostgreSQL (DDD/CQRS + repository + ports/adapters)
 - `vm-manager`: Go + QEMU worker controlled via RabbitMQ
 
+## Quick Project Overview (for new Codex sessions)
+- Goal: single-host VM private cloud MVP with async VM lifecycle orchestration.
+- Services:
+  - `main-api` (Python/FastAPI/PostgreSQL): REST API, DDD/CQRS, auth/RBAC, task tracking, audit logs.
+  - `vm-manager` (Go/QEMU): executes VM create/update/delete + network setup.
+- Communication:
+  - Command path: `main-api -> RabbitMQ(vm.commands) -> vm-manager`
+  - Result path: `vm-manager -> RabbitMQ(vm.results) -> main-api` background consumer
+- API behavior:
+  - `POST/PUT/DELETE /instances` are async (`202 Accepted + task_id`)
+  - Progress/result via `GET /tasks` / `GET /tasks/{id}`
+- Auth/Security:
+  - JWT access + refresh token rotation, logout(revoke), role-based access (`admin/operator/viewer`)
+  - User/role management APIs and audit log APIs are included.
+- Persistence:
+  - PostgreSQL stores instances, tasks, users, refresh tokens, audit logs.
+- Deployment baseline:
+  - `docker-compose` for `main-api`, `postgres`, `rabbitmq`
+  - `vm-manager` runs with host-level privileges for QEMU/network operations.
+
 ## Security notice
 This is development/PoC only. VM root password is intentionally fixed to `1234` and must never be used in production.
 
