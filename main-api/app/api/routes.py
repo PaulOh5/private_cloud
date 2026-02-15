@@ -1,6 +1,8 @@
+import asyncio
+import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session
 
 from app.adapters.postgres import PostgresInstanceReadRepository, PostgresInstanceRepository, PostgresTaskRepository
@@ -9,6 +11,7 @@ from app.api.audit import write_audit_log
 from app.api.dependencies import advisory_lock, get_session, require_roles
 from app.api.schemas import (
     CancelTaskRequest,
+    ConsoleTicketResponse,
     CreateInstanceRequest,
     InstanceResponse,
     InstanceTaskAcceptedResponse,
@@ -22,6 +25,7 @@ from app.application.commands.cancel_task import CancelTaskCommand, CancelTaskHa
 from app.application.commands.delete_instance import DeleteInstanceCommand, DeleteInstanceHandler
 from app.application.commands.retry_task import RetryTaskCommand, RetryTaskHandler
 from app.application.commands.update_instance import UpdateInstanceCommand, UpdateInstanceHandler
+from app.application.services.console_port import compute_console_vnc_port
 from app.application.queries.get_instance import GetInstanceHandler
 from app.application.queries.get_task import GetTaskHandler
 from app.application.queries.list_instances import ListInstancesHandler, ListInstancesQuery
@@ -32,6 +36,7 @@ from app.domain.errors import DomainError
 
 instance_router = APIRouter(prefix="/instances", tags=["instances"])
 task_router = APIRouter(prefix="/tasks", tags=["tasks"])
+logger = logging.getLogger(__name__)
 
 
 def to_instance_response(instance) -> InstanceResponse:
@@ -216,6 +221,139 @@ def get_instance(
 ):
     handler = GetInstanceHandler(read_repository=PostgresInstanceReadRepository(session))
     return to_instance_response(handler.handle(instance_id))
+
+
+@instance_router.post("/{instance_id}/console-ticket", response_model=ConsoleTicketResponse)
+def issue_console_ticket(
+    instance_id: UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles("operator", "admin")),
+):
+    handler = GetInstanceHandler(read_repository=PostgresInstanceReadRepository(session))
+    instance = handler.handle(instance_id)
+    if instance.status != "running":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="console is available only when instance status is running",
+        )
+
+    settings: Settings = request.app.state.settings
+    ticket_store = request.app.state.console_ticket_store
+    ticket = ticket_store.issue(
+        instance_id=instance_id,
+        issued_by_user_id=current_user.id,
+        ttl_seconds=settings.console_ticket_ttl_seconds,
+    )
+    write_audit_log(
+        session=session,
+        request=request,
+        action="instance.console.ticket_issued",
+        target_type="instance",
+        target_id=str(instance_id),
+        actor_user=current_user,
+        metadata={"expires_at": ticket.expires_at.isoformat()},
+    )
+    session.commit()
+    return ConsoleTicketResponse(
+        ticket=ticket.ticket,
+        expires_at=ticket.expires_at,
+        websocket_path=f"/instances/{instance_id}/console/ws?ticket={ticket.ticket}",
+    )
+
+
+@instance_router.websocket("/{instance_id}/console/ws")
+async def proxy_instance_console(
+    websocket: WebSocket,
+    instance_id: UUID,
+    ticket: str = Query(..., min_length=8),
+):
+    ticket_store = websocket.app.state.console_ticket_store
+    ticket_record = ticket_store.consume(ticket=ticket, instance_id=instance_id)
+    if ticket_record is None:
+        await websocket.close(code=1008, reason="invalid or expired ticket")
+        return
+
+    settings: Settings = websocket.app.state.settings
+    vnc_port = compute_console_vnc_port(
+        str(instance_id),
+        base=settings.console_vnc_port_base,
+        span=settings.console_vnc_port_span,
+    )
+    try:
+        reader, writer = await asyncio.open_connection(settings.console_proxy_host, vnc_port)
+    except Exception:
+        await websocket.close(code=1011, reason="console backend unavailable")
+        return
+
+    requested_subprotocols = {
+        item.strip().lower()
+        for item in (websocket.headers.get("sec-websocket-protocol") or "").split(",")
+        if item.strip()
+    }
+    if "binary" in requested_subprotocols:
+        await websocket.accept(subprotocol="binary")
+    else:
+        await websocket.accept()
+
+    async def client_to_vnc() -> None:
+        sent_bytes = 0
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                logger.info(
+                    "console ws client disconnect: instance_id=%s code=%s sent_bytes=%s",
+                    instance_id,
+                    message.get("code"),
+                    sent_bytes,
+                )
+                return
+            chunk = message.get("bytes")
+            if chunk is None:
+                text = message.get("text")
+                if text is None:
+                    continue
+                chunk = text.encode("utf-8")
+            writer.write(chunk)
+            await writer.drain()
+            sent_bytes += len(chunk)
+
+    async def vnc_to_client() -> None:
+        recv_bytes = 0
+        while True:
+            chunk = await reader.read(4096)
+            if not chunk:
+                logger.info(
+                    "console vnc eof: instance_id=%s recv_bytes=%s",
+                    instance_id,
+                    recv_bytes,
+                )
+                return
+            await websocket.send_bytes(chunk)
+            recv_bytes += len(chunk)
+
+    tasks = [asyncio.create_task(client_to_vnc()), asyncio.create_task(vnc_to_client())]
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("console proxy task exception: instance_id=%s err=%r", instance_id, exc)
+    except WebSocketDisconnect as exc:
+        logger.info("console ws top-level disconnect: instance_id=%s code=%s", instance_id, exc.code)
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("console writer close error: instance_id=%s err=%r", instance_id, exc)
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass
 
 
 @task_router.get("", response_model=ListTasksResponse)

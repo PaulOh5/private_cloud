@@ -58,6 +58,12 @@ export interface TaskAccepted {
   accepted_at: string
 }
 
+export interface ConsoleTicketResponse {
+  ticket: string
+  expires_at: string
+  websocket_path: string
+}
+
 export interface LoginRequest {
   username: string
   password: string

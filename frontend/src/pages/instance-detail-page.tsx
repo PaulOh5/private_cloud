@@ -1,7 +1,11 @@
+import RFB from '@novnc/novnc/lib/rfb'
 import { useQuery } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { toast } from 'sonner'
 
-import { getInstance } from '@/features/instances/api'
+import { useAuth } from '@/features/auth/auth-context'
+import { getInstance, issueConsoleTicket } from '@/features/instances/api'
 import { listTasks } from '@/features/tasks/api'
 import { formatDateTime } from '@/shared/lib/date'
 import { resolveErrorMessage } from '@/shared/lib/error'
@@ -15,8 +19,49 @@ import { PageHeader } from '@/shared/ui/page-header'
 import { Spinner } from '@/shared/ui/spinner'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 
+type ConsoleConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error'
+
+const consoleStateLabel: Record<ConsoleConnectionState, string> = {
+  idle: '대기',
+  connecting: '연결 중',
+  connected: '연결됨',
+  disconnected: '연결 종료',
+  error: '오류',
+}
+
+function buildConsoleWebsocketUrl(websocketPath: string): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${protocol}://${window.location.host}/api${websocketPath}`
+}
+
 export function InstanceDetailPage() {
   const { instanceId = '' } = useParams<{ instanceId: string }>()
+  const { hasAnyRole } = useAuth()
+  const canUseConsole = hasAnyRole('admin', 'operator')
+
+  const [consoleState, setConsoleState] = useState<ConsoleConnectionState>('idle')
+  const [consoleMessage, setConsoleMessage] = useState('연결 버튼을 눌러 웹 콘솔을 시작하세요.')
+  const consoleHostRef = useRef<HTMLDivElement | null>(null)
+  const rfbRef = useRef<RFB | null>(null)
+
+  const closeConsoleSession = useCallback(() => {
+    if (rfbRef.current) {
+      rfbRef.current.disconnect()
+      rfbRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      closeConsoleSession()
+    }
+  }, [closeConsoleSession])
+
+  useEffect(() => {
+    closeConsoleSession()
+    setConsoleState('idle')
+    setConsoleMessage('연결 버튼을 눌러 웹 콘솔을 시작하세요.')
+  }, [instanceId, closeConsoleSession])
 
   const instanceQuery = useQuery({
     queryKey: ['instance', instanceId],
@@ -48,6 +93,81 @@ export function InstanceDetailPage() {
       return payload.items.some((item) => item.status === 'queued' || item.status === 'running') ? 5000 : false
     },
   })
+
+  const consoleUnavailableReason = useMemo(() => {
+    if (!canUseConsole) {
+      return '콘솔 접속 권한이 없습니다. (admin/operator 전용)'
+    }
+    if (!instanceQuery.data) {
+      return '인스턴스 정보를 불러오는 중입니다.'
+    }
+    if (instanceQuery.data.status !== 'running') {
+      return `현재 상태가 ${instanceStatusLabel[instanceQuery.data.status]}이므로 콘솔 접속이 비활성화됩니다.`
+    }
+    return null
+  }, [canUseConsole, instanceQuery.data])
+
+  const onConnectConsole = async () => {
+    if (!instanceId || !canUseConsole || !instanceQuery.data || instanceQuery.data.status !== 'running') {
+      return
+    }
+    const host = consoleHostRef.current
+    if (!host) {
+      setConsoleState('error')
+      setConsoleMessage('콘솔 렌더링 영역을 찾을 수 없습니다.')
+      return
+    }
+
+    setConsoleState('connecting')
+    setConsoleMessage('콘솔 티켓 발급 및 연결을 준비하고 있습니다.')
+
+    try {
+      closeConsoleSession()
+      host.replaceChildren()
+
+      const ticket = await issueConsoleTicket(instanceId)
+      const url = buildConsoleWebsocketUrl(ticket.websocket_path)
+
+      const rfb = new RFB(host, url, { wsProtocols: ['binary'] })
+      rfb.scaleViewport = true
+      // QEMU VNC generally does not support noVNC SetDesktopSize negotiation reliably.
+      // Keep client-side scaling only to avoid resize negotiation failures.
+      rfb.resizeSession = false
+      rfbRef.current = rfb
+
+      rfb.addEventListener('connect', () => {
+        setConsoleState('connected')
+        setConsoleMessage('웹 콘솔에 연결되었습니다.')
+      })
+      rfb.addEventListener('disconnect', (event: Event & { detail?: { clean?: boolean } }) => {
+        rfbRef.current = null
+        if (event.detail?.clean) {
+          setConsoleState('disconnected')
+          setConsoleMessage('콘솔 연결이 정상 종료되었습니다.')
+        } else {
+          setConsoleState('error')
+          setConsoleMessage('콘솔 연결이 비정상 종료되었습니다.')
+        }
+      })
+      rfb.addEventListener('credentialsrequired', () => {
+        setConsoleState('error')
+        setConsoleMessage('예상치 못한 VNC 자격 증명 요청이 발생했습니다.')
+        closeConsoleSession()
+      })
+    } catch (error) {
+      setConsoleState('error')
+      const message = resolveErrorMessage(error)
+      setConsoleMessage(message)
+      toast.error(message)
+      closeConsoleSession()
+    }
+  }
+
+  const onDisconnectConsole = () => {
+    closeConsoleSession()
+    setConsoleState('disconnected')
+    setConsoleMessage('사용자 요청으로 콘솔 연결을 종료했습니다.')
+  }
 
   return (
     <>
@@ -94,6 +214,38 @@ export function InstanceDetailPage() {
               <p>
                 <strong>수정 시각:</strong> {formatDateTime(instanceQuery.data.updated_at)}
               </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>웹 콘솔 (noVNC)</CardTitle>
+              <CardDescription>SSH 연결 없이 브라우저에서 VM 콘솔을 직접 확인합니다.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  onClick={() => {
+                    void onConnectConsole()
+                  }}
+                  disabled={Boolean(consoleUnavailableReason) || consoleState === 'connecting'}
+                >
+                  {consoleState === 'connecting' ? '연결 중...' : '콘솔 연결'}
+                </Button>
+                <Button variant="outline" onClick={onDisconnectConsole} disabled={!rfbRef.current}>
+                  연결 종료
+                </Button>
+                <Badge tone={consoleState === 'error' ? 'danger' : consoleState === 'connected' ? 'success' : 'neutral'}>
+                  {consoleStateLabel[consoleState]}
+                </Badge>
+              </div>
+
+              {consoleUnavailableReason ? <p className="text-sm text-muted-foreground">{consoleUnavailableReason}</p> : null}
+              <p className="text-sm text-muted-foreground">{consoleMessage}</p>
+
+              <div className="overflow-hidden rounded-lg border border-border bg-black">
+                <div ref={consoleHostRef} className="h-[420px] w-full" />
+              </div>
             </CardContent>
           </Card>
 

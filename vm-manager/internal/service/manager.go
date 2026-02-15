@@ -152,28 +152,30 @@ func (m *Manager) createVM(correlationID string, payload model.CreatePayload) (m
 
 	pidFile := filepath.Join(instanceDir, "qemu.pid")
 	monitor := filepath.Join(instanceDir, "qemu.monitor.sock")
-	if err := m.qemu.Start(payload.InstanceID, payload.CPU, payload.MemoryMiB, diskPath, seedISO, netSpec, pidFile, monitor); err != nil {
+	consoleVNCPort := infra.ComputeConsoleVNCPort(payload.InstanceID, m.cfg.ConsoleVNCPortBase, m.cfg.ConsoleVNCPortSpan)
+	if err := m.qemu.Start(payload.InstanceID, payload.CPU, payload.MemoryMiB, diskPath, seedISO, netSpec, pidFile, monitor, consoleVNCPort); err != nil {
 		resp := failure(correlationID, "QEMU_ERROR", err.Error())
 		return resp, err
 	}
 
 	st := infra.InstanceState{
-		InstanceID: payload.InstanceID,
-		Name:       valueOrEmpty(payload.Name),
-		CPU:        payload.CPU,
-		MemoryMiB:  payload.MemoryMiB,
-		DiskGiB:    payload.DiskGiB,
-		Status:     "running",
-		IPAddress:  netSpec.VMIP,
-		HostIP:     netSpec.HostIP,
-		TapIf:      netSpec.TapIf,
-		BridgeIf:   netSpec.BridgeIf,
-		VethHostIf: netSpec.VethHost,
-		VethBrIf:   netSpec.VethBr,
-		DiskPath:   diskPath,
-		SeedISO:    seedISO,
-		PidFile:    pidFile,
-		Monitor:    monitor,
+		InstanceID:     payload.InstanceID,
+		Name:           valueOrEmpty(payload.Name),
+		CPU:            payload.CPU,
+		MemoryMiB:      payload.MemoryMiB,
+		DiskGiB:        payload.DiskGiB,
+		Status:         "running",
+		IPAddress:      netSpec.VMIP,
+		HostIP:         netSpec.HostIP,
+		ConsoleVNCPort: consoleVNCPort,
+		TapIf:          netSpec.TapIf,
+		BridgeIf:       netSpec.BridgeIf,
+		VethHostIf:     netSpec.VethHost,
+		VethBrIf:       netSpec.VethBr,
+		DiskPath:       diskPath,
+		SeedISO:        seedISO,
+		PidFile:        pidFile,
+		Monitor:        monitor,
 	}
 	if err := m.store.SaveInstance(st); err != nil {
 		resp := failure(correlationID, "QEMU_ERROR", err.Error())
@@ -184,9 +186,10 @@ func (m *Manager) createVM(correlationID string, payload model.CreatePayload) (m
 		CorrelationID: correlationID,
 		Success:       true,
 		Result: map[string]any{
-			"ip_address": netSpec.VMIP,
-			"status":     "running",
-			"host_ip":    netSpec.HostIP,
+			"ip_address":       netSpec.VMIP,
+			"status":           "running",
+			"host_ip":          netSpec.HostIP,
+			"console_vnc_port": consoleVNCPort,
 		},
 	}, nil
 }
@@ -229,7 +232,11 @@ func (m *Manager) updateVM(correlationID string, payload model.UpdatePayload) (m
 		resp := failure(correlationID, "NETWORK_ERROR", err.Error())
 		return resp, err
 	}
-	if err := m.qemu.Start(payload.InstanceID, payload.CPU, payload.MemoryMiB, st.DiskPath, st.SeedISO, netSpec, st.PidFile, st.Monitor); err != nil {
+	consoleVNCPort := st.ConsoleVNCPort
+	if consoleVNCPort == 0 {
+		consoleVNCPort = infra.ComputeConsoleVNCPort(payload.InstanceID, m.cfg.ConsoleVNCPortBase, m.cfg.ConsoleVNCPortSpan)
+	}
+	if err := m.qemu.Start(payload.InstanceID, payload.CPU, payload.MemoryMiB, st.DiskPath, st.SeedISO, netSpec, st.PidFile, st.Monitor, consoleVNCPort); err != nil {
 		resp := failure(correlationID, "QEMU_ERROR", err.Error())
 		return resp, err
 	}
@@ -238,6 +245,7 @@ func (m *Manager) updateVM(correlationID string, payload model.UpdatePayload) (m
 	st.MemoryMiB = payload.MemoryMiB
 	st.DiskGiB = payload.DiskGiB
 	st.Status = "running"
+	st.ConsoleVNCPort = consoleVNCPort
 	if err := m.store.SaveInstance(st); err != nil {
 		resp := failure(correlationID, "QEMU_ERROR", err.Error())
 		return resp, err
@@ -247,8 +255,9 @@ func (m *Manager) updateVM(correlationID string, payload model.UpdatePayload) (m
 		CorrelationID: correlationID,
 		Success:       true,
 		Result: map[string]any{
-			"status":     "running",
-			"ip_address": st.IPAddress,
+			"status":           "running",
+			"ip_address":       st.IPAddress,
+			"console_vnc_port": consoleVNCPort,
 		},
 	}, nil
 }

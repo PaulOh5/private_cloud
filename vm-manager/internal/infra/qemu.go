@@ -49,8 +49,9 @@ func (q *QemuManager) ResizeDisk(diskPath string, diskGiB int) error {
 	return q.runner.Run("qemu-img", "resize", diskPath, fmt.Sprintf("%dG", diskGiB))
 }
 
-func (q *QemuManager) Start(instanceID string, cpu, memoryMiB int, diskPath, seedISO string, network NetworkSpec, pidFile, monitorSocket string) error {
+func (q *QemuManager) Start(instanceID string, cpu, memoryMiB int, diskPath, seedISO string, network NetworkSpec, pidFile, monitorSocket string, vncPort int) error {
 	serialLog := filepath.Join(filepath.Dir(pidFile), "serial.log")
+	vncDisplay := strconv.Itoa(vncPort - 5900)
 	args := []string{
 		"-name", "vm-" + instanceID,
 		"-enable-kvm",
@@ -61,6 +62,7 @@ func (q *QemuManager) Start(instanceID string, cpu, memoryMiB int, diskPath, see
 		"-netdev", "tap,id=net0,ifname=" + network.TapIf + ",script=no,downscript=no",
 		"-device", "virtio-net-pci,netdev=net0",
 		"-display", "none",
+		"-vnc", "0.0.0.0:" + vncDisplay,
 		"-serial", "file:" + serialLog,
 		"-daemonize",
 		"-pidfile", pidFile,

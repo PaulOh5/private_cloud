@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api/client'
-import type { Instance, PaginationResponse, TaskAccepted } from '@/types/api'
+import type { ConsoleTicketResponse, Instance, PaginationResponse, TaskAccepted } from '@/types/api'
 
 export interface ListInstancesParams {
   limit: number
@@ -43,5 +43,10 @@ export async function updateInstance(instanceId: string, payload: UpdateInstance
 
 export async function deleteInstance(instanceId: string): Promise<TaskAccepted> {
   const response = await apiClient.delete<TaskAccepted>(`/instances/${instanceId}`)
+  return response.data
+}
+
+export async function issueConsoleTicket(instanceId: string): Promise<ConsoleTicketResponse> {
+  const response = await apiClient.post<ConsoleTicketResponse>(`/instances/${instanceId}/console-ticket`)
   return response.data
 }

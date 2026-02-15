@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     vm_command_timeout_seconds: int = 120
     task_stale_queued_timeout_seconds: int = 180
     task_stale_sweep_interval_seconds: int = 15
+    console_ticket_ttl_seconds: int = 300
+    console_proxy_host: str = "host.docker.internal"
+    console_vnc_port_base: int = 20000
+    console_vnc_port_span: int = 40000
 
     auth_jwt_secret: str = "dev-change-me"
     auth_jwt_algorithm: str = "HS256"

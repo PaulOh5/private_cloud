@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '../../app/ui.js': path.resolve(__dirname, './src/lib/novnc-ui-shim.ts'),
     },
   },
   server: {
@@ -16,6 +17,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        ws: true,
         rewrite: (inputPath) => inputPath.replace(/^\/api/, ''),
       },
     },
