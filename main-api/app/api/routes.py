@@ -8,6 +8,7 @@ from app.adapters.resource_accounting import HostResourceAccountingAdapter
 from app.api.audit import write_audit_log
 from app.api.dependencies import advisory_lock, get_session, require_roles
 from app.api.schemas import (
+    CancelTaskRequest,
     CreateInstanceRequest,
     InstanceResponse,
     InstanceTaskAcceptedResponse,
@@ -17,7 +18,9 @@ from app.api.schemas import (
     UpdateInstanceRequest,
 )
 from app.application.commands.create_instance import CreateInstanceCommand, CreateInstanceHandler
+from app.application.commands.cancel_task import CancelTaskCommand, CancelTaskHandler
 from app.application.commands.delete_instance import DeleteInstanceCommand, DeleteInstanceHandler
+from app.application.commands.retry_task import RetryTaskCommand, RetryTaskHandler
 from app.application.commands.update_instance import UpdateInstanceCommand, UpdateInstanceHandler
 from app.application.queries.get_instance import GetInstanceHandler
 from app.application.queries.get_task import GetTaskHandler
@@ -25,6 +28,7 @@ from app.application.queries.list_instances import ListInstancesHandler, ListIns
 from app.application.queries.list_tasks import ListTasksHandler, ListTasksQuery
 from app.config import Settings
 from app.domain.auth import User
+from app.domain.errors import DomainError
 
 instance_router = APIRouter(prefix="/instances", tags=["instances"])
 task_router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -244,3 +248,109 @@ def get_task(
 ):
     handler = GetTaskHandler(task_repository=PostgresTaskRepository(session))
     return to_task_response(handler.handle(task_id))
+
+
+@task_router.post("/{task_id}/retry", response_model=InstanceTaskAcceptedResponse, status_code=202)
+def retry_task(
+    task_id: UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles("operator", "admin")),
+):
+    advisory_lock(session)
+    handler = RetryTaskHandler(
+        write_repository=PostgresInstanceRepository(session),
+        task_repository=PostgresTaskRepository(session),
+        provisioning=request.app.state.vm_port,
+        accounting=HostResourceAccountingAdapter(session),
+    )
+    accepted = handler.handle(RetryTaskCommand(task_id=task_id))
+    write_audit_log(
+        session=session,
+        request=request,
+        action="task.retry.requested",
+        target_type="task",
+        target_id=str(task_id),
+        actor_user=current_user,
+        metadata={
+            "new_task_id": str(accepted.task_id),
+            "instance_id": str(accepted.instance_id),
+            "command": accepted.command,
+        },
+    )
+    session.commit()
+    return InstanceTaskAcceptedResponse(
+        task_id=accepted.task_id,
+        instance_id=accepted.instance_id,
+        status=accepted.status,
+        command=accepted.command,
+        accepted_at=accepted.accepted_at,
+    )
+
+
+@task_router.post("/{task_id}/cancel", response_model=InstanceTaskAcceptedResponse, status_code=202)
+def cancel_task(
+    task_id: UUID,
+    request: Request,
+    body: CancelTaskRequest | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles("operator", "admin")),
+):
+    advisory_lock(session)
+    handler = CancelTaskHandler(
+        write_repository=PostgresInstanceRepository(session),
+        task_repository=PostgresTaskRepository(session),
+        provisioning=request.app.state.vm_port,
+    )
+    try:
+        accepted = handler.handle(
+            CancelTaskCommand(
+                task_id=task_id,
+                actor_user_id=current_user.id,
+                reason=body.reason if body else None,
+            )
+        )
+    except DomainError as exc:
+        write_audit_log(
+            session=session,
+            request=request,
+            action="task.cancel.failed",
+            target_type="task",
+            target_id=str(task_id),
+            actor_user=current_user,
+            metadata={"reason": body.reason if body else None, "error_code": exc.code, "error_message": str(exc)},
+        )
+        session.commit()
+        raise
+
+    write_audit_log(
+        session=session,
+        request=request,
+        action="task.cancel.requested",
+        target_type="task",
+        target_id=str(task_id),
+        actor_user=current_user,
+        metadata={
+            "reason": body.reason if body else None,
+            "result_status": accepted.status,
+            "instance_id": str(accepted.instance_id),
+        },
+    )
+    if accepted.status == "canceled":
+        write_audit_log(
+            session=session,
+            request=request,
+            action="task.cancel.completed",
+            target_type="task",
+            target_id=str(task_id),
+            actor_user=current_user,
+            metadata={"reason": body.reason if body else None},
+        )
+    session.commit()
+    return InstanceTaskAcceptedResponse(
+        task_id=accepted.task_id,
+        instance_id=accepted.instance_id,
+        status=accepted.status,
+        command=accepted.command,
+        accepted_at=accepted.accepted_at,
+    )

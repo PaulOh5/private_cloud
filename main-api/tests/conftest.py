@@ -72,7 +72,10 @@ class InMemoryTaskRepo:
         self.tasks: dict[UUID, InstanceTask] = {}
 
     def has_active_task(self, instance_id: UUID) -> bool:
-        return any(t.instance_id == instance_id and t.status in {"queued", "running"} for t in self.tasks.values())
+        return any(
+            t.instance_id == instance_id and t.status in {"queued", "running", "cancel_pending"}
+            for t in self.tasks.values()
+        )
 
     def create_task(self, task: InstanceTask) -> InstanceTask:
         self.tasks[task.id] = task
@@ -106,6 +109,69 @@ class InMemoryTaskRepo:
         )
         self.tasks[task_id] = updated
         return updated
+
+    def mark_cancel_pending(
+        self,
+        task_id: UUID,
+        canceled_by: UUID | None,
+        cancel_reason: str | None,
+    ) -> InstanceTask:
+        t = self.tasks[task_id]
+        updated = replace(
+            t,
+            status="cancel_pending",
+            updated_at=datetime.now(timezone.utc),
+        )
+        self.tasks[task_id] = updated
+        return updated
+
+    def mark_canceled(
+        self,
+        task_id: UUID,
+        attempt_count: int,
+        canceled_by: UUID | None,
+        cancel_reason: str | None,
+        result_payload: dict | None,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> InstanceTask:
+        t = self.tasks[task_id]
+        updated = replace(
+            t,
+            status="canceled",
+            attempt_count=attempt_count,
+            result_payload=result_payload,
+            error_code=error_code,
+            error_message=error_message,
+            finished_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        self.tasks[task_id] = updated
+        return updated
+
+    def clone_for_retry(
+        self,
+        source_task: InstanceTask,
+        new_task_id: UUID,
+        new_request_id: UUID,
+        created_at: datetime,
+    ) -> InstanceTask:
+        cloned = replace(
+            source_task,
+            id=new_task_id,
+            status="queued",
+            request_id=new_request_id,
+            result_payload=None,
+            error_code=None,
+            error_message=None,
+            attempt_count=0,
+            created_at=created_at,
+            started_at=None,
+            finished_at=None,
+            updated_at=created_at,
+        )
+        self.tasks[new_task_id] = cloned
+        return cloned
 
     def mark_terminal(
         self,

@@ -25,7 +25,7 @@ export function TaskDetailPage() {
       if (!task) {
         return false
       }
-      return task.status === 'queued' || task.status === 'running' ? 5000 : false
+      return task.status === 'queued' || task.status === 'running' || task.status === 'cancel_pending' ? 5000 : false
     },
   })
 

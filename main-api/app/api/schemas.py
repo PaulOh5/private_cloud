@@ -45,6 +45,10 @@ class InstanceTaskAcceptedResponse(BaseModel):
     accepted_at: datetime
 
 
+class CancelTaskRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=512)
+
+
 class TaskResponse(BaseModel):
     id: UUID
     instance_id: UUID

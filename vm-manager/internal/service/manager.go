@@ -93,6 +93,12 @@ func (m *Manager) dispatch(msg model.CommandMessage) (model.CommandResponse, err
 			return failure(msg.CorrelationID, "VALIDATION_ERROR", "invalid delete payload"), err
 		}
 		return m.deleteVM(msg.CorrelationID, payload)
+	case "instance.cancel":
+		var payload model.CancelPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return failure(msg.CorrelationID, "VALIDATION_ERROR", "invalid cancel payload"), err
+		}
+		return m.cancelVM(msg.CorrelationID, payload)
 	default:
 		err := fmt.Errorf("unsupported command %s", msg.Command)
 		return failure(msg.CorrelationID, "VALIDATION_ERROR", err.Error()), err
@@ -287,6 +293,33 @@ func (m *Manager) deleteVM(correlationID string, payload model.DeletePayload) (m
 	}
 
 	return model.CommandResponse{CorrelationID: correlationID, Success: true, Result: map[string]any{"status": "deleted"}}, nil
+}
+
+func (m *Manager) cancelVM(correlationID string, payload model.CancelPayload) (model.CommandResponse, error) {
+	if payload.TargetTaskID == "" {
+		err := fmt.Errorf("target_task_id is required")
+		return failure(correlationID, "VALIDATION_ERROR", err.Error()), err
+	}
+	if _, err := uuid.Parse(payload.TargetTaskID); err != nil {
+		return failure(correlationID, "VALIDATION_ERROR", "invalid target_task_id"), err
+	}
+	switch payload.TargetCommand {
+	case "create", "update", "delete":
+	default:
+		err := fmt.Errorf("invalid target_command")
+		return failure(correlationID, "VALIDATION_ERROR", err.Error()), err
+	}
+
+	return model.CommandResponse{
+		CorrelationID: correlationID,
+		Success:       true,
+		Result: map[string]any{
+			"status":         "canceled",
+			"target_task_id": payload.TargetTaskID,
+			"target_command": payload.TargetCommand,
+			"reason":         payload.Reason,
+		},
+	}, nil
 }
 
 func (m *Manager) StartNetworkJanitor(ctx context.Context) {

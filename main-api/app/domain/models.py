@@ -15,7 +15,7 @@ InstanceStatus = Literal[
     "deleted",
 ]
 TaskCommand = Literal["create", "update", "delete"]
-TaskStatus = Literal["queued", "running", "succeeded", "failed"]
+TaskStatus = Literal["queued", "running", "cancel_pending", "succeeded", "failed", "canceled"]
 
 
 @dataclass(frozen=True)

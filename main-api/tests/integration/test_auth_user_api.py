@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app.config import get_settings
 
@@ -200,3 +202,215 @@ def test_failed_login_writes_audit_log(api_client: TestClient):
     assert logs.status_code == 200, logs.text
     items = logs.json()["items"]
     assert any(item["actor_username"] == wrong_username for item in items)
+
+
+@pytest.mark.integration
+def test_retry_api_returns_202_and_creates_new_task(api_client: TestClient):
+    admin_tokens = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
+
+    create_resp = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"name": "retry-api-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert create_resp.status_code == 202, create_resp.text
+    original_task_id = create_resp.json()["task_id"]
+    instance_id = create_resp.json()["instance_id"]
+
+    with api_client.app.state.session_factory() as session:
+        session.execute(
+            text(
+                """
+                UPDATE instance_tasks
+                SET status = 'failed',
+                    error_code = 'QEMU_ERROR',
+                    error_message = 'forced failure',
+                    finished_at = :now,
+                    updated_at = :now
+                WHERE id = :task_id
+                """
+            ),
+            {"task_id": original_task_id, "now": datetime.now(timezone.utc)},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE instances
+                SET status = 'error',
+                    reserve_resources = false,
+                    last_task_id = NULL,
+                    ip_address = NULL,
+                    updated_at = :now
+                WHERE id = :instance_id
+                """
+            ),
+            {"instance_id": instance_id, "now": datetime.now(timezone.utc)},
+        )
+        session.commit()
+
+    retry_resp = api_client.post(f"/tasks/{original_task_id}/retry", headers=headers)
+    assert retry_resp.status_code == 202, retry_resp.text
+    payload = retry_resp.json()
+    assert payload["status"] == "queued"
+    assert payload["task_id"] != original_task_id
+
+    with api_client.app.state.session_factory() as session:
+        row = session.execute(
+            text("SELECT status, retry_of_task_id FROM instance_tasks WHERE id = :id"),
+            {"id": payload["task_id"]},
+        ).mappings().one()
+    assert row["status"] == "queued"
+    assert str(row["retry_of_task_id"]) == original_task_id
+
+
+@pytest.mark.integration
+def test_cancel_queued_task_sets_terminal_canceled(api_client: TestClient):
+    admin_tokens = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
+
+    create_resp = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"name": "cancel-queued-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert create_resp.status_code == 202, create_resp.text
+    task_id = create_resp.json()["task_id"]
+
+    cancel_resp = api_client.post(
+        f"/tasks/{task_id}/cancel",
+        headers=headers,
+        json={"reason": "operator request"},
+    )
+    assert cancel_resp.status_code == 202, cancel_resp.text
+    assert cancel_resp.json()["status"] == "canceled"
+
+    task_resp = api_client.get(f"/tasks/{task_id}", headers=headers)
+    assert task_resp.status_code == 200
+    assert task_resp.json()["status"] == "canceled"
+
+
+@pytest.mark.integration
+def test_cancel_running_task_sets_cancel_pending(api_client: TestClient):
+    admin_tokens = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
+
+    create_resp = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"name": "cancel-running-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert create_resp.status_code == 202, create_resp.text
+    task_id = create_resp.json()["task_id"]
+
+    with api_client.app.state.session_factory() as session:
+        session.execute(
+            text(
+                """
+                UPDATE instance_tasks
+                SET status = 'running',
+                    started_at = :now,
+                    updated_at = :now
+                WHERE id = :task_id
+                """
+            ),
+            {"task_id": task_id, "now": datetime.now(timezone.utc)},
+        )
+        session.commit()
+
+    cancel_resp = api_client.post(
+        f"/tasks/{task_id}/cancel",
+        headers=headers,
+        json={"reason": "long running"},
+    )
+    assert cancel_resp.status_code == 202, cancel_resp.text
+    assert cancel_resp.json()["status"] == "cancel_pending"
+
+    task_resp = api_client.get(f"/tasks/{task_id}", headers=headers)
+    assert task_resp.status_code == 200
+    assert task_resp.json()["status"] == "cancel_pending"
+
+
+@pytest.mark.integration
+def test_retry_cancel_audit_logs_are_written(api_client: TestClient):
+    admin_tokens = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
+
+    create_resp = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"name": "audit-retry-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert create_resp.status_code == 202, create_resp.text
+    original_task_id = create_resp.json()["task_id"]
+    instance_id = create_resp.json()["instance_id"]
+
+    with api_client.app.state.session_factory() as session:
+        now = datetime.now(timezone.utc)
+        session.execute(
+            text(
+                """
+                UPDATE instance_tasks
+                SET status = 'failed',
+                    error_code = 'QEMU_ERROR',
+                    error_message = 'forced failure',
+                    finished_at = :now,
+                    updated_at = :now
+                WHERE id = :task_id
+                """
+            ),
+            {"task_id": original_task_id, "now": now},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE instances
+                SET status = 'error',
+                    reserve_resources = false,
+                    last_task_id = NULL,
+                    ip_address = NULL,
+                    updated_at = :now
+                WHERE id = :instance_id
+                """
+            ),
+            {"instance_id": instance_id, "now": now},
+        )
+        session.commit()
+
+    retry_resp = api_client.post(f"/tasks/{original_task_id}/retry", headers=headers)
+    assert retry_resp.status_code == 202, retry_resp.text
+
+    cancel_task_id = retry_resp.json()["task_id"]
+    with api_client.app.state.session_factory() as session:
+        session.execute(
+            text(
+                """
+                UPDATE instance_tasks
+                SET status = 'queued',
+                    updated_at = :now
+                WHERE id = :task_id
+                """
+            ),
+            {"task_id": cancel_task_id, "now": datetime.now(timezone.utc)},
+        )
+        session.commit()
+
+    cancel_resp = api_client.post(f"/tasks/{cancel_task_id}/cancel", headers=headers, json={"reason": "audit"})
+    assert cancel_resp.status_code == 202, cancel_resp.text
+    assert cancel_resp.json()["status"] == "canceled"
+
+    retry_logs = api_client.get(
+        "/audit-logs",
+        headers=headers,
+        params={"action": "task.retry.requested", "target_type": "task"},
+    )
+    assert retry_logs.status_code == 200, retry_logs.text
+    assert any(item["target_id"] == original_task_id for item in retry_logs.json()["items"])
+
+    cancel_logs = api_client.get(
+        "/audit-logs",
+        headers=headers,
+        params={"action": "task.cancel.requested", "target_type": "task"},
+    )
+    assert cancel_logs.status_code == 200, cancel_logs.text
+    assert any(item["target_id"] == cancel_task_id for item in cancel_logs.json()["items"])
