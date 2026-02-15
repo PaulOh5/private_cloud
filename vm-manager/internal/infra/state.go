@@ -12,22 +12,23 @@ import (
 )
 
 type InstanceState struct {
-	InstanceID string `json:"instance_id"`
-	Name       string `json:"name"`
-	CPU        int    `json:"cpu"`
-	MemoryMiB  int    `json:"memory_mib"`
-	DiskGiB    int    `json:"disk_gib"`
-	Status     string `json:"status"`
-	IPAddress  string `json:"ip_address"`
-	HostIP     string `json:"host_ip"`
-	TapIf      string `json:"tap_if"`
-	BridgeIf   string `json:"bridge_if"`
-	VethHostIf string `json:"veth_host_if"`
-	VethBrIf   string `json:"veth_br_if"`
-	DiskPath   string `json:"disk_path"`
-	SeedISO    string `json:"seed_iso"`
-	PidFile    string `json:"pid_file"`
-	Monitor    string `json:"monitor"`
+	InstanceID     string `json:"instance_id"`
+	Name           string `json:"name"`
+	CPU            int    `json:"cpu"`
+	MemoryMiB      int    `json:"memory_mib"`
+	DiskGiB        int    `json:"disk_gib"`
+	Status         string `json:"status"`
+	IPAddress      string `json:"ip_address"`
+	HostIP         string `json:"host_ip"`
+	ConsoleVNCPort int    `json:"console_vnc_port"`
+	TapIf          string `json:"tap_if"`
+	BridgeIf       string `json:"bridge_if"`
+	VethHostIf     string `json:"veth_host_if"`
+	VethBrIf       string `json:"veth_br_if"`
+	DiskPath       string `json:"disk_path"`
+	SeedISO        string `json:"seed_iso"`
+	PidFile        string `json:"pid_file"`
+	Monitor        string `json:"monitor"`
 }
 
 type StateStore struct {

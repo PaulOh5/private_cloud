@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 from app.adapters.postgres import PostgresUserRepository
 from app.adapters.rabbitmq_result_consumer import RabbitMqVmResultConsumer
 from app.adapters.rabbitmq_rpc import RabbitMqVmProvisioningAdapter
+from app.adapters.console_ticket_store import ConsoleTicketStore
 from app.adapters.stale_task_monitor import StaleTaskMonitor
 from app.api.auth_routes import auth_router
 from app.api.audit_routes import audit_router
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
     app.state.session_factory = session_factory
     app.state.vm_port = RabbitMqVmProvisioningAdapter(settings.rabbitmq_dsn)
     app.state.result_consumer = RabbitMqVmResultConsumer(settings.rabbitmq_dsn, session_factory)
+    app.state.console_ticket_store = ConsoleTicketStore()
     if settings.task_stale_sweep_interval_seconds > 0:
         app.state.stale_task_monitor = StaleTaskMonitor(
             session_factory=session_factory,

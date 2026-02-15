@@ -13,12 +13,14 @@ This repository contains an MSA MVP with three services:
 - Communication:
   - Command path: `main-api -> RabbitMQ(vm.commands) -> vm-manager`
   - Result path: `vm-manager -> RabbitMQ(vm.results) -> main-api` background consumer
+  - Console path: `frontend(noVNC) -> main-api(console ticket + WS proxy) -> vm-manager/QEMU VNC`
 - API behavior:
   - `POST/PUT/DELETE /instances` are async (`202 Accepted + task_id`)
   - Progress/result via `GET /tasks` / `GET /tasks/{id}`
 - Auth/Security:
   - JWT access + refresh token rotation, logout(revoke), role-based access (`admin/operator/viewer`)
   - User/role management APIs and audit log APIs are included.
+  - VM web console is ticket-based (5 min TTL, single-use) and limited to `admin/operator`.
 - Persistence:
   - PostgreSQL stores instances, tasks, users, refresh tokens, audit logs.
 - Deployment baseline:
@@ -34,6 +36,7 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 2. If host ports conflict, override exposed ports in `.env`:
    - `POSTGRES_EXPOSE_PORT`, `RABBITMQ_EXPOSE_PORT`, `RABBITMQ_MGMT_EXPOSE_PORT`
    - `MAIN_API_PORT`, `FRONTEND_PORT`
+   - Optional noVNC console: `CONSOLE_TICKET_TTL_SECONDS` (default `300`), `CONSOLE_PROXY_HOST` (default `host.docker.internal`), `CONSOLE_VNC_PORT_BASE` (default `20000`), `CONSOLE_VNC_PORT_SPAN` (default `40000`)
    - Optional stale-task recovery: `TASK_STALE_QUEUED_TIMEOUT_SECONDS` (default `180`), `TASK_STALE_SWEEP_INTERVAL_SECONDS` (default `15`, set `0` to disable)
    - Optional VM egress interface override: `VM_EGRESS_INTERFACE` (default route interface is auto-detected)
    - Optional VM network cleanup interval: `VM_NETWORK_CLEANUP_INTERVAL_SECONDS` (default `300`, set `0` to disable)
@@ -52,12 +55,13 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 1. 로그인 후 `인스턴스` 화면에서 현재 VM 목록을 확인합니다.
 2. `인스턴스 생성` 버튼으로 VM 요청을 생성합니다.
 3. `작업 이력` 화면에서 `queued/running/succeeded/failed` 상태 변화를 확인합니다.
-4. 관리자 계정이면 `사용자 관리`에서 operator/viewer 계정을 분리 생성합니다.
-5. `감사 로그`에서 로그인/권한/리소스 작업 이벤트를 점검합니다.
+4. `인스턴스 상세`에서 `웹 콘솔(noVNC)` 버튼으로 SSH 없이 VM 콘솔에 접속합니다.
+5. 관리자 계정이면 `사용자 관리`에서 operator/viewer 계정을 분리 생성합니다.
+6. `감사 로그`에서 로그인/권한/리소스 작업 이벤트를 점검합니다.
 
 ### RBAC behavior
 - `admin`: 전체 기능 (인스턴스/태스크/사용자/감사로그)
-- `operator`: 인스턴스/태스크 조회 + 생성/수정/삭제 요청
+- `operator`: 인스턴스/태스크 조회 + 생성/수정/삭제 요청 + VM 웹 콘솔
 - `viewer`: 인스턴스/태스크 조회 전용
 
 ## Services and queues
@@ -85,12 +89,20 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
 - `DELETE /instances/{id}` -> `202 + task_id`
 - `GET /instances`
 - `GET /instances/{id}`
+- `POST /instances/{id}/console-ticket` (operator/admin)
+- `WS /instances/{id}/console/ws?ticket=...` (single-use ticket required)
 - `GET /tasks`
 - `GET /tasks/{id}`
 - `POST /tasks/{id}/retry` -> `202 + new task_id`
 - `POST /tasks/{id}/cancel` -> `202 + cancel_pending|canceled`
 
 All `/instances` and `/tasks` endpoints require `Authorization: Bearer <token>`.
+
+## Web console notes (noVNC)
+- Designed for single-host `docker-compose` PoC.
+- `main-api` proxies WebSocket traffic to host QEMU VNC ports using `CONSOLE_PROXY_HOST`.
+- Ticket policy: 1-time use, expires in 5 minutes by default.
+- QEMU VNC ports are exposed on host range derived from `CONSOLE_VNC_PORT_BASE` and `CONSOLE_VNC_PORT_SPAN`; enforce host firewall/network restrictions in non-local environments.
 
 ## State model
 - Instance: `creating_pending | updating_pending | deleting_pending | running | stopped | error | deleted`
@@ -129,19 +141,19 @@ cd main-api
 ### Run unit tests
 ```bash
 cd main-api
-PYTHONPATH=. .venv/bin/pytest -q tests/unit
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/unit
 ```
 
 ### Run integration tests
 ```bash
 cd main-api
-PYTHONPATH=. .venv/bin/pytest -q tests/integration -m integration
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/integration -m integration
 ```
 
 ### Run all tests
 ```bash
 cd main-api
-PYTHONPATH=. .venv/bin/pytest -q
+PYTHONPATH=. .venv/bin/python -m pytest -q
 ```
 
 ### Notes

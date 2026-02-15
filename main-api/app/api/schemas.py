@@ -45,6 +45,12 @@ class InstanceTaskAcceptedResponse(BaseModel):
     accepted_at: datetime
 
 
+class ConsoleTicketResponse(BaseModel):
+    ticket: str
+    expires_at: datetime
+    websocket_path: str
+
+
 class CancelTaskRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=512)
 

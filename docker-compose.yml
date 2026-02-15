@@ -51,8 +51,14 @@ services:
       VM_COMMAND_TIMEOUT_SECONDS: 120
       TASK_STALE_QUEUED_TIMEOUT_SECONDS: ${TASK_STALE_QUEUED_TIMEOUT_SECONDS:-180}
       TASK_STALE_SWEEP_INTERVAL_SECONDS: ${TASK_STALE_SWEEP_INTERVAL_SECONDS:-15}
+      CONSOLE_TICKET_TTL_SECONDS: ${CONSOLE_TICKET_TTL_SECONDS:-300}
+      CONSOLE_PROXY_HOST: ${CONSOLE_PROXY_HOST:-host.docker.internal}
+      CONSOLE_VNC_PORT_BASE: ${CONSOLE_VNC_PORT_BASE:-20000}
+      CONSOLE_VNC_PORT_SPAN: ${CONSOLE_VNC_PORT_SPAN:-40000}
     ports:
       - "${MAIN_API_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1', 8000), 2); s.close()\""]
       interval: 5s
@@ -78,6 +84,8 @@ services:
       VM_EGRESS_INTERFACE: ${VM_EGRESS_INTERFACE:-}
       VM_COMMAND_TIMEOUT_SECONDS: 120
       VM_NETWORK_CLEANUP_INTERVAL_SECONDS: ${VM_NETWORK_CLEANUP_INTERVAL_SECONDS:-300}
+      CONSOLE_VNC_PORT_BASE: ${CONSOLE_VNC_PORT_BASE:-20000}
+      CONSOLE_VNC_PORT_SPAN: ${CONSOLE_VNC_PORT_SPAN:-40000}
     volumes:
       - vmdata:${VM_BASE_DIR:-/var/lib/vm-manager}
       - /var/run:/var/run
