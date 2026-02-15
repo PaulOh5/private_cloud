@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
+
+from app.application.commands.common import TaskAccepted
+from app.domain.models import Instance, InstanceTask, ResourceSpec
+from app.ports.interfaces import (
+    CapacityCheckInput,
+    InstanceRepository,
+    ResourceAccountingPort,
+    TaskRepository,
+    VmProvisioningPort,
+)
+
+
+@dataclass(frozen=True)
+class CreateInstanceCommand:
+    cpu: int
+    memory_mib: int
+    disk_gib: int
+    name: str | None
+    host_node: str
+
+
+class CreateInstanceHandler:
+    def __init__(
+        self,
+        write_repository: InstanceRepository,
+        task_repository: TaskRepository,
+        provisioning: VmProvisioningPort,
+        accounting: ResourceAccountingPort,
+    ):
+        self.write_repository = write_repository
+        self.task_repository = task_repository
+        self.provisioning = provisioning
+        self.accounting = accounting
+
+    def handle(self, command: CreateInstanceCommand) -> TaskAccepted:
+        spec = ResourceSpec(cpu=command.cpu, memory_mib=command.memory_mib, disk_gib=command.disk_gib)
+        spec.validate()
+
+        self.accounting.assert_capacity(
+            CapacityCheckInput(host_node=command.host_node, current=None, requested=spec)
+        )
+
+        instance_id = uuid4()
+        task_id = uuid4()
+        request_id = uuid4()
+        now = datetime.now(timezone.utc)
+
+        instance = Instance(
+            id=UUID(str(instance_id)),
+            name=command.name,
+            resource_spec=spec,
+            status="creating_pending",
+            ip_address=None,
+            host_node=command.host_node,
+            reserve_resources=True,
+            last_task_id=task_id,
+            deleted_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        self.write_repository.create(instance)
+
+        task = InstanceTask(
+            id=task_id,
+            instance_id=instance_id,
+            command="create",
+            status="queued",
+            request_id=request_id,
+            request_payload={
+                "name": command.name,
+                "cpu": spec.cpu,
+                "memory_mib": spec.memory_mib,
+                "disk_gib": spec.disk_gib,
+                "host_node": command.host_node,
+            },
+            result_payload=None,
+            error_code=None,
+            error_message=None,
+            attempt_count=0,
+            max_attempts=3,
+            created_at=now,
+            started_at=None,
+            finished_at=None,
+            updated_at=now,
+        )
+        self.task_repository.create_task(task)
+
+        self.provisioning.publish_command(
+            command="instance.create",
+            payload={
+                "instance_id": str(instance_id),
+                "name": command.name,
+                "cpu": spec.cpu,
+                "memory_mib": spec.memory_mib,
+                "disk_gib": spec.disk_gib,
+                "host_node": command.host_node,
+            },
+            task_id=task_id,
+            request_id=request_id,
+        )
+
+        return TaskAccepted(
+            task_id=task_id,
+            instance_id=instance_id,
+            command="create",
+            status="queued",
+            accepted_at=now,
+        )
