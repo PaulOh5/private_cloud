@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,9 @@ type Config struct {
 	RabbitMQURL            string
 	Concurrency            int
 	BaseImageURL           string
+	ImageCatalogJSON       string
+	ImageDefaultID         string
+	ImageAllowNoChecksum   bool
 	VMBaseDir              string
 	EgressInterface        string
 	ConsoleVNCPortBase     int
@@ -25,6 +29,9 @@ func Load() (Config, error) {
 	cfg := Config{
 		RabbitMQURL:            getEnv("RABBITMQ_URL", "amqp://cloud:cloud@localhost:5672/"),
 		BaseImageURL:           getEnv("BASE_IMAGE_URL", "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"),
+		ImageCatalogJSON:       getEnv("VM_IMAGE_CATALOG_JSON", ""),
+		ImageDefaultID:         getEnv("VM_IMAGE_DEFAULT_ID", ""),
+		ImageAllowNoChecksum:   getEnvBool("VM_IMAGE_ALLOW_INSECURE_NO_CHECKSUM", false),
 		VMBaseDir:              getEnv("VM_BASE_DIR", "/var/lib/vm-manager"),
 		EgressInterface:        getEnv("VM_EGRESS_INTERFACE", ""),
 		ConsoleVNCPortBase:     getEnvInt("CONSOLE_VNC_PORT_BASE", 20000),
@@ -75,4 +82,19 @@ func getEnvInt(key string, defaultValue int) int {
 		return defaultValue
 	}
 	return out
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return defaultValue
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
 }

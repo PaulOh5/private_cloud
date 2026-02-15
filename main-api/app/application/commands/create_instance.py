@@ -22,6 +22,7 @@ class CreateInstanceCommand:
     disk_gib: int
     name: str | None
     host_node: str
+    image_id: str | None = None
 
 
 class CreateInstanceHandler:
@@ -77,6 +78,7 @@ class CreateInstanceHandler:
                 "memory_mib": spec.memory_mib,
                 "disk_gib": spec.disk_gib,
                 "host_node": command.host_node,
+                **({"image_id": command.image_id} if command.image_id else {}),
             },
             result_payload=None,
             error_code=None,
@@ -99,6 +101,7 @@ class CreateInstanceHandler:
                 "memory_mib": spec.memory_mib,
                 "disk_gib": spec.disk_gib,
                 "host_node": command.host_node,
+                **({"image_id": command.image_id} if command.image_id else {}),
             },
             task_id=task_id,
             request_id=request_id,

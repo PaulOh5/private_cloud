@@ -1,37 +1,134 @@
 package infra
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"vm-manager/internal/util"
 )
 
 type QemuManager struct {
-	runner util.Runner
+	runner     util.Runner
+	imageLocks sync.Map
 }
 
 func NewQemuManager(r util.Runner) *QemuManager {
 	return &QemuManager{runner: r}
 }
 
-func (q *QemuManager) EnsureBaseImage(baseDir string, baseImageURL string) (string, error) {
-	imagesDir := filepath.Join(baseDir, "images")
+type ImageError struct {
+	Code string
+	Err  error
+}
+
+func (e *ImageError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *ImageError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (q *QemuManager) EnsureBaseImage(baseDir string, image ImageRef) (string, error) {
+	if image.ID == "" {
+		return "", &ImageError{Code: "VALIDATION_ERROR", Err: fmt.Errorf("image id is required")}
+	}
+	if image.URL == "" {
+		return "", &ImageError{Code: "VALIDATION_ERROR", Err: fmt.Errorf("image url is required for %s", image.ID)}
+	}
+	if image.Format != "qcow2" {
+		return "", &ImageError{Code: "VALIDATION_ERROR", Err: fmt.Errorf("unsupported image format %q", image.Format)}
+	}
+
+	contentKey := imageContentKey(image)
+	imagesDir := filepath.Join(baseDir, "images", image.ID, contentKey)
 	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
-		return "", err
+		return "", &ImageError{Code: "IMAGE_DOWNLOAD_ERROR", Err: err}
 	}
-	basePath := filepath.Join(imagesDir, "noble-server-cloudimg-amd64.img")
+	basePath := filepath.Join(imagesDir, "base."+image.Format)
+	tmpPath := basePath + ".part"
+
+	lock := q.imageLock(image.ID + ":" + contentKey)
+	lock.Lock()
+	defer lock.Unlock()
+
 	if _, err := os.Stat(basePath); err == nil {
-		return basePath, nil
+		if err := verifySHA256(basePath, image.SHA256); err == nil {
+			return basePath, nil
+		}
+		_ = os.Remove(basePath)
+	} else if !os.IsNotExist(err) {
+		return "", &ImageError{Code: "IMAGE_DOWNLOAD_ERROR", Err: err}
 	}
-	if err := q.runner.Run("curl", "-fL", "-o", basePath, baseImageURL); err != nil {
-		return "", err
+
+	_ = os.Remove(tmpPath)
+	if err := q.runner.Run("curl", "-fL", "-o", tmpPath, image.URL); err != nil {
+		return "", &ImageError{Code: "IMAGE_DOWNLOAD_ERROR", Err: err}
+	}
+	if err := verifySHA256(tmpPath, image.SHA256); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", &ImageError{Code: "IMAGE_INTEGRITY_ERROR", Err: err}
+	}
+	if err := os.Rename(tmpPath, basePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", &ImageError{Code: "IMAGE_DOWNLOAD_ERROR", Err: err}
 	}
 	return basePath, nil
+}
+
+func (q *QemuManager) imageLock(key string) *sync.Mutex {
+	if v, ok := q.imageLocks.Load(key); ok {
+		return v.(*sync.Mutex)
+	}
+	mu := &sync.Mutex{}
+	v, _ := q.imageLocks.LoadOrStore(key, mu)
+	return v.(*sync.Mutex)
+}
+
+func imageContentKey(image ImageRef) string {
+	if len(image.SHA256) >= 16 {
+		return strings.ToLower(image.SHA256[:16])
+	}
+	sum := sha256.Sum256([]byte(image.URL))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+func verifySHA256(path string, expected string) error {
+	want := strings.TrimSpace(strings.ToLower(expected))
+	if want == "" {
+		return nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return err
+	}
+	got := hex.EncodeToString(hash.Sum(nil))
+	if got != want {
+		return fmt.Errorf("sha256 mismatch: expected %s got %s", want, got)
+	}
+	return nil
 }
 
 func (q *QemuManager) CreateOverlay(instanceDir, baseImagePath string, diskGiB int) (string, error) {
@@ -88,7 +185,7 @@ func (q *QemuManager) Stop(pidFile string) error {
 		return nil
 	}
 	if err := q.runner.Run("sh", "-lc", "kill -TERM "+pidStr); err != nil {
-		if strings.Contains(err.Error(), "No such process") {
+		if strings.Contains(err.Error(), "No such process") || errors.Is(err, os.ErrProcessDone) {
 			_ = os.Remove(pidFile)
 			return nil
 		}

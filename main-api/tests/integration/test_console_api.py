@@ -36,6 +36,19 @@ class DummyVmResultConsumer:
         return None
 
 
+class DummyVmImageSyncRpcAdapter:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def sync_images(self):
+        return {
+            "status": "synced",
+            "default_image_id": "ubuntu-24.04",
+            "total_images": 1,
+            "synchronized_items": [{"id": "ubuntu-24.04", "path": "/var/lib/vm-manager/images/ubuntu-24.04/base.qcow2"}],
+        }
+
+
 @pytest.fixture(scope="module")
 def pg_container():
     with postgres.PostgresContainer("postgres:16") as c:
@@ -56,9 +69,11 @@ def api_client(pg_container, monkeypatch):
 
     import app.adapters.rabbitmq_result_consumer as result_module
     import app.adapters.rabbitmq_rpc as rpc_module
+    import app.adapters.rabbitmq_image_sync_rpc as image_sync_module
 
     monkeypatch.setattr(rpc_module, "RabbitMqVmProvisioningAdapter", DummyVmProvisioningAdapter)
     monkeypatch.setattr(result_module, "RabbitMqVmResultConsumer", DummyVmResultConsumer)
+    monkeypatch.setattr(image_sync_module, "RabbitMqVmImageSyncRpcAdapter", DummyVmImageSyncRpcAdapter)
 
     get_settings.cache_clear()
     import app.main as main_module

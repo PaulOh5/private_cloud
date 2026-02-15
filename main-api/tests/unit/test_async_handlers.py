@@ -46,6 +46,35 @@ def test_create_handler_queues_task_and_publishes(
     assert dummy_provisioning.calls[0]["command"] == "instance.create"
 
 
+def test_create_handler_forwards_optional_image_id(
+    in_memory_instance_repo,
+    in_memory_task_repo,
+    dummy_provisioning,
+    dummy_capacity,
+):
+    handler = CreateInstanceHandler(
+        write_repository=in_memory_instance_repo,
+        task_repository=in_memory_task_repo,
+        provisioning=dummy_provisioning,
+        accounting=dummy_capacity,
+    )
+
+    accepted = handler.handle(
+        CreateInstanceCommand(
+            cpu=2,
+            memory_mib=2048,
+            disk_gib=20,
+            name="vm-image",
+            host_node="localhost",
+            image_id="ubuntu-22.04",
+        )
+    )
+
+    assert accepted.status == "queued"
+    assert dummy_provisioning.calls[0]["payload"]["image_id"] == "ubuntu-22.04"
+    assert in_memory_task_repo.tasks[accepted.task_id].request_payload["image_id"] == "ubuntu-22.04"
+
+
 def test_update_handler_rejects_when_active_task_exists(
     in_memory_instance_repo,
     in_memory_task_repo,
@@ -187,6 +216,7 @@ def test_retry_handler_from_failed_creates_new_task_and_publishes(
                 "memory_mib": 2048,
                 "disk_gib": 30,
                 "host_node": "localhost",
+                "image_id": "ubuntu-24.04",
             },
             result_payload=None,
             error_code="QEMU_ERROR",
@@ -214,6 +244,7 @@ def test_retry_handler_from_failed_creates_new_task_and_publishes(
     assert in_memory_task_repo.tasks[accepted.task_id].status == "queued"
     assert in_memory_instance_repo.instances[instance_id].status == "creating_pending"
     assert dummy_provisioning.calls[-1]["command"] == "instance.create"
+    assert dummy_provisioning.calls[-1]["payload"]["image_id"] == "ubuntu-24.04"
 
 
 def test_retry_handler_blocked_when_active_task_exists(

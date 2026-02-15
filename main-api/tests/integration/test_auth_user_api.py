@@ -33,6 +33,19 @@ class DummyVmResultConsumer:
         return None
 
 
+class DummyVmImageSyncRpcAdapter:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def sync_images(self):
+        return {
+            "status": "synced",
+            "default_image_id": "ubuntu-24.04",
+            "total_images": 1,
+            "synchronized_items": [{"id": "ubuntu-24.04", "path": "/var/lib/vm-manager/images/ubuntu-24.04/base.qcow2"}],
+        }
+
+
 @pytest.fixture(scope="module")
 def pg_container():
     with postgres.PostgresContainer("postgres:16") as c:
@@ -53,9 +66,11 @@ def api_client(pg_container, monkeypatch):
 
     import app.adapters.rabbitmq_result_consumer as result_module
     import app.adapters.rabbitmq_rpc as rpc_module
+    import app.adapters.rabbitmq_image_sync_rpc as image_sync_module
 
     monkeypatch.setattr(rpc_module, "RabbitMqVmProvisioningAdapter", DummyVmProvisioningAdapter)
     monkeypatch.setattr(result_module, "RabbitMqVmResultConsumer", DummyVmResultConsumer)
+    monkeypatch.setattr(image_sync_module, "RabbitMqVmImageSyncRpcAdapter", DummyVmImageSyncRpcAdapter)
 
     get_settings.cache_clear()
     import app.main as main_module
@@ -82,6 +97,32 @@ def test_roles_endpoint_and_admin_login(api_client: TestClient):
     assert roles.status_code == 200
     role_names = {item["name"] for item in roles.json()["items"]}
     assert role_names == {"admin", "operator", "viewer"}
+
+
+@pytest.mark.integration
+def test_images_endpoint_returns_catalog(api_client: TestClient):
+    tokens = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    response = api_client.get("/images", headers=headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["items"]
+    assert any(item["id"] == "ubuntu-24.04" and item["is_default"] for item in payload["items"])
+
+
+@pytest.mark.integration
+def test_images_sync_endpoint_returns_sync_result(api_client: TestClient):
+    tokens = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    response = api_client.post("/images/sync", headers=headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "synced"
+    assert payload["default_image_id"] == "ubuntu-24.04"
+    assert payload["total_images"] == 1
+    assert payload["synchronized_items"]
 
 
 @pytest.mark.integration

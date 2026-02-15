@@ -32,6 +32,15 @@ export interface Instance {
   updated_at: string
 }
 
+export interface VmImage {
+  id: string
+  url: string
+  format: string
+  is_default: boolean
+  has_checksum: boolean
+  description: string | null
+}
+
 export interface Task {
   id: string
   instance_id: string

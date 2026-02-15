@@ -116,7 +116,7 @@ class RetryTaskHandler:
         host_node: str,
     ) -> dict:
         if command == "create":
-            return {
+            payload = {
                 "instance_id": str(instance_id),
                 "name": request_payload.get("name"),
                 "cpu": int(request_payload.get("cpu")),
@@ -124,6 +124,10 @@ class RetryTaskHandler:
                 "disk_gib": int(request_payload.get("disk_gib")),
                 "host_node": host_node,
             }
+            image_id = request_payload.get("image_id")
+            if image_id:
+                payload["image_id"] = str(image_id)
+            return payload
 
         if command == "update":
             return {

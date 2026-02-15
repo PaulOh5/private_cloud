@@ -9,14 +9,16 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from app.adapters.postgres import PostgresUserRepository
+from app.adapters.rabbitmq_image_sync_rpc import RabbitMqVmImageSyncRpcAdapter
 from app.adapters.rabbitmq_result_consumer import RabbitMqVmResultConsumer
 from app.adapters.rabbitmq_rpc import RabbitMqVmProvisioningAdapter
 from app.adapters.console_ticket_store import ConsoleTicketStore
 from app.adapters.stale_task_monitor import StaleTaskMonitor
 from app.api.auth_routes import auth_router
 from app.api.audit_routes import audit_router
-from app.api.routes import instance_router, task_router
+from app.api.routes import image_router, instance_router, legacy_image_router, task_router
 from app.api.user_routes import role_router, user_router
+from app.application.services.vm_image_catalog import load_vm_image_catalog
 from app.config import get_settings
 from app.domain.errors import DomainError
 from app.infra.db import apply_schema, build_engine, build_session_factory
@@ -45,7 +47,8 @@ def _run_with_db_retry(description: str, fn: Callable[[], None], attempts: int =
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    
+    vm_image_catalog = load_vm_image_catalog(settings)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.result_consumer.start()
@@ -98,8 +101,13 @@ def create_app() -> FastAPI:
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.state.vm_port = RabbitMqVmProvisioningAdapter(settings.rabbitmq_dsn)
+    app.state.vm_image_sync_port = RabbitMqVmImageSyncRpcAdapter(
+        settings.rabbitmq_dsn,
+        settings.vm_command_timeout_seconds,
+    )
     app.state.result_consumer = RabbitMqVmResultConsumer(settings.rabbitmq_dsn, session_factory)
     app.state.console_ticket_store = ConsoleTicketStore()
+    app.state.vm_image_catalog = vm_image_catalog
     if settings.task_stale_sweep_interval_seconds > 0:
         app.state.stale_task_monitor = StaleTaskMonitor(
             session_factory=session_factory,
@@ -113,6 +121,8 @@ def create_app() -> FastAPI:
     app.include_router(audit_router)
     app.include_router(role_router)
     app.include_router(user_router)
+    app.include_router(image_router)
+    app.include_router(legacy_image_router)
     app.include_router(instance_router)
     app.include_router(task_router)
 

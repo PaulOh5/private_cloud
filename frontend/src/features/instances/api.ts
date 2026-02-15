@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api/client'
-import type { ConsoleTicketResponse, Instance, PaginationResponse, TaskAccepted } from '@/types/api'
+import type { ConsoleTicketResponse, Instance, PaginationResponse, TaskAccepted, VmImage } from '@/types/api'
 
 export interface ListInstancesParams {
   limit: number
@@ -13,6 +13,7 @@ export interface CreateInstancePayload {
   cpu: number
   memory_mib: number
   disk_gib: number
+  image_id?: string
 }
 
 export interface UpdateInstancePayload {
@@ -49,4 +50,9 @@ export async function deleteInstance(instanceId: string): Promise<TaskAccepted> 
 export async function issueConsoleTicket(instanceId: string): Promise<ConsoleTicketResponse> {
   const response = await apiClient.post<ConsoleTicketResponse>(`/instances/${instanceId}/console-ticket`)
   return response.data
+}
+
+export async function listVmImages(): Promise<VmImage[]> {
+  const response = await apiClient.get<{ items: VmImage[] }>('/images')
+  return response.data.items
 }
