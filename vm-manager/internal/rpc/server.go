@@ -17,19 +17,23 @@ import (
 )
 
 const (
-	commandExchange = "vm.commands"
-	commandQueue    = "vm.commands.q"
-	dlqExchange     = "vm.commands.dlx"
-	dlqQueue        = "vm.commands.dlq"
-	resultExchange  = "vm.results"
-	resultRoute     = "instance.result"
+	commandExchange             = "vm.commands"
+	commandQueue                = "vm.commands.q"
+	dlqExchange                 = "vm.commands.dlx"
+	dlqQueue                    = "vm.commands.dlq"
+	resultExchange              = "vm.results"
+	resultRoute                 = "instance.result"
+	resultPublishConfirmTimeout = 3 * time.Second
 )
 
 type Server struct {
-	conn        *amqp.Connection
-	ch          *amqp.Channel
-	manager     *service.Manager
-	concurrency int
+	conn            *amqp.Connection
+	consumeCh       *amqp.Channel
+	resultPubCh     *amqp.Channel
+	resultConfirmCh <-chan amqp.Confirmation
+	resultPubMu     sync.Mutex
+	manager         *service.Manager
+	concurrency     int
 }
 
 func New(url string, manager *service.Manager, concurrency int) (*Server, error) {
@@ -37,25 +41,46 @@ func New(url string, manager *service.Manager, concurrency int) (*Server, error)
 	if err != nil {
 		return nil, err
 	}
-	ch, err := conn.Channel()
+	consumeCh, err := conn.Channel()
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-
-	if err := declareTopology(ch); err != nil {
-		_ = ch.Close()
+	resultPubCh, err := conn.Channel()
+	if err != nil {
+		_ = consumeCh.Close()
 		_ = conn.Close()
 		return nil, err
 	}
 
-	if err := ch.Qos(concurrency, 0, false); err != nil {
-		_ = ch.Close()
+	if err := declareTopology(consumeCh); err != nil {
+		_ = resultPubCh.Close()
+		_ = consumeCh.Close()
 		_ = conn.Close()
 		return nil, err
 	}
 
-	return &Server{conn: conn, ch: ch, manager: manager, concurrency: concurrency}, nil
+	if err := consumeCh.Qos(concurrency, 0, false); err != nil {
+		_ = resultPubCh.Close()
+		_ = consumeCh.Close()
+		_ = conn.Close()
+		return nil, err
+	}
+	if err := resultPubCh.Confirm(false); err != nil {
+		_ = resultPubCh.Close()
+		_ = consumeCh.Close()
+		_ = conn.Close()
+		return nil, err
+	}
+
+	return &Server{
+		conn:            conn,
+		consumeCh:       consumeCh,
+		resultPubCh:     resultPubCh,
+		resultConfirmCh: resultPubCh.NotifyPublish(make(chan amqp.Confirmation, concurrency+1)),
+		manager:         manager,
+		concurrency:     concurrency,
+	}, nil
 }
 
 func declareTopology(ch *amqp.Channel) error {
@@ -90,7 +115,7 @@ func declareTopology(ch *amqp.Channel) error {
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	deliveries, err := s.ch.Consume(commandQueue, "", false, false, false, false, nil)
+	deliveries, err := s.consumeCh.Consume(commandQueue, "", false, false, false, false, nil)
 	if err != nil {
 		return err
 	}
@@ -124,12 +149,15 @@ func normalizeCommand(command string) string {
 	return strings.TrimPrefix(command, "instance.")
 }
 
-func (s *Server) publishResultEvent(event model.ResultEvent) error {
+func (s *Server) publishResultEventWithConfirm(event model.ResultEvent) error {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	return s.ch.PublishWithContext(
+	s.resultPubMu.Lock()
+	defer s.resultPubMu.Unlock()
+
+	if err := s.resultPubCh.PublishWithContext(
 		context.Background(),
 		resultExchange,
 		resultRoute,
@@ -139,7 +167,28 @@ func (s *Server) publishResultEvent(event model.ResultEvent) error {
 			ContentType: "application/json",
 			Body:        body,
 		},
-	)
+	); err != nil {
+		return err
+	}
+	return awaitPublishConfirm(s.resultConfirmCh, resultPublishConfirmTimeout)
+}
+
+func awaitPublishConfirm(confirmCh <-chan amqp.Confirmation, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case confirm, ok := <-confirmCh:
+		if !ok {
+			return fmt.Errorf("publisher confirm channel closed")
+		}
+		if !confirm.Ack {
+			return fmt.Errorf("publisher confirm nack")
+		}
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("publisher confirm timeout after %s", timeout)
+	}
 }
 
 func nowISO() string {
@@ -179,8 +228,10 @@ func (s *Server) handleDelivery(msg amqp.Delivery) {
 			AttemptCount: 1,
 			Timestamp:    nowISO(),
 		}
-		if err := s.publishResultEvent(runningEvent); err != nil {
+		if err := s.publishResultEventWithConfirm(runningEvent); err != nil {
 			log.Printf("failed to publish running result event: %v", err)
+			_ = msg.Nack(false, true)
+			return
 		}
 	}
 
@@ -209,14 +260,16 @@ func (s *Server) handleDelivery(msg amqp.Delivery) {
 			AttemptCount: attemptCount,
 			Timestamp:    nowISO(),
 		}
-		if err := s.publishResultEvent(finalEvent); err != nil {
+		if err := s.publishResultEventWithConfirm(finalEvent); err != nil {
 			log.Printf("failed to publish final result event: %v", err)
+			_ = msg.Nack(false, true)
+			return
 		}
 	}
 
 	if msg.ReplyTo != "" {
 		body, _ := json.Marshal(response)
-		err := s.ch.PublishWithContext(
+		err := s.consumeCh.PublishWithContext(
 			context.Background(),
 			"",
 			msg.ReplyTo,
@@ -240,7 +293,7 @@ func (s *Server) handleDelivery(msg amqp.Delivery) {
 }
 
 func (s *Server) publishDLQ(msg amqp.Delivery) error {
-	return s.ch.PublishWithContext(
+	return s.consumeCh.PublishWithContext(
 		context.Background(),
 		dlqExchange,
 		dlqQueue,
@@ -255,8 +308,11 @@ func (s *Server) publishDLQ(msg amqp.Delivery) error {
 }
 
 func (s *Server) Close() {
-	if s.ch != nil {
-		_ = s.ch.Close()
+	if s.resultPubCh != nil {
+		_ = s.resultPubCh.Close()
+	}
+	if s.consumeCh != nil {
+		_ = s.consumeCh.Close()
 	}
 	if s.conn != nil {
 		_ = s.conn.Close()
