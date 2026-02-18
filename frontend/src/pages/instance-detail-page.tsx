@@ -1,11 +1,11 @@
 import RFB from '@novnc/novnc/lib/rfb'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { useAuth } from '@/features/auth/auth-context'
-import { getInstance, issueConsoleTicket } from '@/features/instances/api'
+import { getInstance, issueConsoleTicket, startInstance, stopInstance } from '@/features/instances/api'
 import { listTasks } from '@/features/tasks/api'
 import { formatDateTime } from '@/shared/lib/date'
 import { resolveErrorMessage } from '@/shared/lib/error'
@@ -37,7 +37,9 @@ function buildConsoleWebsocketUrl(websocketPath: string): string {
 export function InstanceDetailPage() {
   const { instanceId = '' } = useParams<{ instanceId: string }>()
   const { hasAnyRole } = useAuth()
+  const queryClient = useQueryClient()
   const canUseConsole = hasAnyRole('admin', 'operator')
+  const canManageInstance = hasAnyRole('admin', 'operator')
 
   const [consoleState, setConsoleState] = useState<ConsoleConnectionState>('idle')
   const [consoleMessage, setConsoleMessage] = useState('연결 버튼을 눌러 웹 콘솔을 시작하세요.')
@@ -106,6 +108,32 @@ export function InstanceDetailPage() {
   }, [canUseConsole, instanceQuery.data])
 
   const canDisconnectConsole = consoleState === 'connected' || consoleState === 'connecting'
+
+  const startMutation = useMutation({
+    mutationFn: (id: string) => startInstance(id),
+    onSuccess: (result) => {
+      toast.success(`시작 요청이 등록되었습니다. task_id=${result.task_id}`)
+      void queryClient.invalidateQueries({ queryKey: ['instance', instanceId] })
+      void queryClient.invalidateQueries({ queryKey: ['instances'] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    },
+    onError: (error) => {
+      toast.error(resolveErrorMessage(error))
+    },
+  })
+
+  const stopMutation = useMutation({
+    mutationFn: (id: string) => stopInstance(id),
+    onSuccess: (result) => {
+      toast.success(`중지 요청이 등록되었습니다. task_id=${result.task_id}`)
+      void queryClient.invalidateQueries({ queryKey: ['instance', instanceId] })
+      void queryClient.invalidateQueries({ queryKey: ['instances'] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    },
+    onError: (error) => {
+      toast.error(resolveErrorMessage(error))
+    },
+  })
 
   const onConnectConsole = async () => {
     if (!instanceId || !canUseConsole || !instanceQuery.data || instanceQuery.data.status !== 'running') {
@@ -217,6 +245,30 @@ export function InstanceDetailPage() {
               <p>
                 <strong>수정 시각:</strong> {formatDateTime(instanceQuery.data.updated_at)}
               </p>
+              {canManageInstance ? (
+                <div className="md:col-span-2">
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      onClick={() => {
+                        if (instanceQuery.data?.status === 'running') {
+                          stopMutation.mutate(instanceQuery.data.id)
+                        } else if (instanceQuery.data?.status === 'stopped') {
+                          startMutation.mutate(instanceQuery.data.id)
+                        }
+                      }}
+                      disabled={
+                        !instanceQuery.data ||
+                        instanceQuery.data.status.endsWith('_pending') ||
+                        (instanceQuery.data.status !== 'running' && instanceQuery.data.status !== 'stopped') ||
+                        startMutation.isPending ||
+                        stopMutation.isPending
+                      }
+                    >
+                      {instanceQuery.data.status === 'running' ? '중지 요청' : '시작 요청'}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 

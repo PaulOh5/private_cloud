@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from app.domain.auth import RefreshToken, Role, User
@@ -268,6 +268,8 @@ class CapacityCheckInput:
     host_node: str
     current: ResourceSpec | None
     requested: ResourceSpec
+    current_profile: Literal["running", "stopped", "none"] = "running"
+    requested_profile: Literal["running", "stopped", "none"] = "running"
 
 
 class ResourceAccountingPort(Protocol):
@@ -280,8 +282,8 @@ class TenantQuotaCheckInput:
     tenant_id: UUID
     current: ResourceSpec | None
     requested: ResourceSpec
-    current_reserved: bool
-    requested_reserved: bool
+    current_profile: Literal["running", "stopped", "none"] = "running"
+    requested_profile: Literal["running", "stopped", "none"] = "running"
 
 
 class TenantQuotaAccountingPort(Protocol):

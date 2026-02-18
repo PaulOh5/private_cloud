@@ -28,6 +28,11 @@
 - `main-api` background consumer updates `instance_tasks` and `instances` state.
 - Failed command messages are also published to `vm.commands.dlq`.
 
+## Stop/Start behavior
+- `POST /instances/{id}/stop` powers off VM without deleting it.
+- `POST /instances/{id}/start` boots a stopped VM and revalidates tenant quota/capacity.
+- `stopped` instances release CPU/memory usage, but still reserve instance count and disk quota.
+
 ## Recovery notes
 - Check failed tasks via `GET /tasks?status=failed`.
 - Inspect DLQ (`vm.commands.dlq`) for broker-level failures.

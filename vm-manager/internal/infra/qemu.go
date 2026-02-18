@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -169,18 +170,17 @@ func (q *QemuManager) Start(instanceID string, cpu, memoryMiB int, diskPath, see
 }
 
 func (q *QemuManager) Stop(pidFile string) error {
-	pidBytes, err := os.ReadFile(pidFile)
+	pidStr, err := q.readPID(pidFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	pidStr := strings.TrimSpace(string(pidBytes))
 	if pidStr == "" {
 		return nil
 	}
-	if _, err := os.Stat("/proc/" + pidStr); os.IsNotExist(err) {
+	if !q.processExists(pidStr) {
 		_ = os.Remove(pidFile)
 		return nil
 	}
@@ -191,12 +191,97 @@ func (q *QemuManager) Stop(pidFile string) error {
 		}
 		return err
 	}
-	for i := 0; i < 20; i++ {
-		if _, err := os.Stat("/proc/" + pidStr); os.IsNotExist(err) {
-			break
+	if !q.waitForExit(pidStr, 6*time.Second) {
+		_ = q.runner.Run("sh", "-lc", "kill -KILL "+pidStr)
+	}
+	_ = os.Remove(pidFile)
+	return nil
+}
+
+func (q *QemuManager) Powerdown(monitorSocket, pidFile string, gracefulTimeout, forceTimeout time.Duration) error {
+	pidStr, err := q.readPID(pidFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if pidStr == "" {
+		return nil
+	}
+	if !q.processExists(pidStr) {
+		_ = os.Remove(pidFile)
+		return nil
+	}
+
+	_ = q.sendMonitorPowerdown(monitorSocket)
+	if q.waitForExit(pidStr, gracefulTimeout) {
+		_ = os.Remove(pidFile)
+		return nil
+	}
+
+	if err := q.runner.Run("sh", "-lc", "kill -TERM "+pidStr); err != nil {
+		if strings.Contains(err.Error(), "No such process") || errors.Is(err, os.ErrProcessDone) {
+			_ = os.Remove(pidFile)
+			return nil
+		}
+		return err
+	}
+	if q.waitForExit(pidStr, forceTimeout) {
+		_ = os.Remove(pidFile)
+		return nil
+	}
+	if err := q.runner.Run("sh", "-lc", "kill -KILL "+pidStr); err != nil {
+		if strings.Contains(err.Error(), "No such process") || errors.Is(err, os.ErrProcessDone) {
+			_ = os.Remove(pidFile)
+			return nil
+		}
+		return err
+	}
+	_ = q.waitForExit(pidStr, 2*time.Second)
+	_ = os.Remove(pidFile)
+	return nil
+}
+
+func (q *QemuManager) readPID(pidFile string) (string, error) {
+	pidBytes, err := os.ReadFile(pidFile)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(pidBytes)), nil
+}
+
+func (q *QemuManager) processExists(pid string) bool {
+	_, err := os.Stat("/proc/" + pid)
+	return err == nil
+}
+
+func (q *QemuManager) waitForExit(pid string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if !q.processExists(pid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	_ = os.Remove(pidFile)
+}
+
+func (q *QemuManager) sendMonitorPowerdown(monitorSocket string) error {
+	if strings.TrimSpace(monitorSocket) == "" {
+		return nil
+	}
+	conn, err := net.DialTimeout("unix", monitorSocket, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Write([]byte("system_powerdown\n")); err != nil {
+		return err
+	}
 	return nil
 }

@@ -98,6 +98,18 @@ func (m *Manager) dispatch(msg model.CommandMessage) (model.CommandResponse, err
 			return failure(msg.CorrelationID, "VALIDATION_ERROR", "invalid update payload"), err
 		}
 		return m.updateVM(msg.CorrelationID, payload)
+	case "instance.start":
+		var payload model.StartPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return failure(msg.CorrelationID, "VALIDATION_ERROR", "invalid start payload"), err
+		}
+		return m.startVM(msg.CorrelationID, payload)
+	case "instance.stop":
+		var payload model.StopPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			return failure(msg.CorrelationID, "VALIDATION_ERROR", "invalid stop payload"), err
+		}
+		return m.stopVM(msg.CorrelationID, payload)
 	case "instance.delete":
 		var payload model.DeletePayload
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
@@ -236,10 +248,16 @@ func (m *Manager) updateVM(correlationID string, payload model.UpdatePayload) (m
 		resp := failure(correlationID, "VALIDATION_ERROR", err.Error())
 		return resp, err
 	}
+	bootAfterUpdate := true
+	if payload.BootAfterUpdate != nil {
+		bootAfterUpdate = *payload.BootAfterUpdate
+	}
 
-	if err := m.qemu.Stop(st.PidFile); err != nil {
-		resp := failure(correlationID, "QEMU_ERROR", err.Error())
-		return resp, err
+	if st.Status != "stopped" {
+		if err := m.qemu.Stop(st.PidFile); err != nil {
+			resp := failure(correlationID, "QEMU_ERROR", err.Error())
+			return resp, err
+		}
 	}
 	if payload.DiskGiB > st.DiskGiB {
 		if err := m.qemu.ResizeDisk(st.DiskPath, payload.DiskGiB); err != nil {
@@ -248,12 +266,76 @@ func (m *Manager) updateVM(correlationID string, payload model.UpdatePayload) (m
 		}
 	}
 
-	netSpec := infra.NetworkSpec{
-		TapIf:    st.TapIf,
-		BridgeIf: st.BridgeIf,
-		HostIP:   st.HostIP,
-		VMIP:     st.IPAddress,
+	netSpec := networkSpecFromState(st)
+	consoleVNCPort := st.ConsoleVNCPort
+	if consoleVNCPort == 0 {
+		consoleVNCPort = infra.ComputeConsoleVNCPort(payload.InstanceID, m.cfg.ConsoleVNCPortBase, m.cfg.ConsoleVNCPortSpan)
 	}
+	if bootAfterUpdate {
+		if err := m.network.Ensure(netSpec); err != nil {
+			resp := failure(correlationID, "NETWORK_ERROR", err.Error())
+			return resp, err
+		}
+		if err := m.qemu.Start(payload.InstanceID, payload.CPU, payload.MemoryMiB, st.DiskPath, st.SeedISO, netSpec, st.PidFile, st.Monitor, consoleVNCPort); err != nil {
+			resp := failure(correlationID, "QEMU_ERROR", err.Error())
+			return resp, err
+		}
+	} else {
+		if err := m.network.Delete(netSpec); err != nil {
+			resp := failure(correlationID, "NETWORK_ERROR", err.Error())
+			return resp, err
+		}
+		_ = m.network.CleanupByInstanceID(payload.InstanceID)
+	}
+
+	st.CPU = payload.CPU
+	st.MemoryMiB = payload.MemoryMiB
+	st.DiskGiB = payload.DiskGiB
+	if bootAfterUpdate {
+		st.Status = "running"
+	} else {
+		st.Status = "stopped"
+	}
+	st.ConsoleVNCPort = consoleVNCPort
+	if err := m.store.SaveInstance(st); err != nil {
+		resp := failure(correlationID, "QEMU_ERROR", err.Error())
+		return resp, err
+	}
+
+	return model.CommandResponse{
+		CorrelationID: correlationID,
+		Success:       true,
+		Result: map[string]any{
+			"status":           st.Status,
+			"ip_address":       st.IPAddress,
+			"console_vnc_port": consoleVNCPort,
+		},
+	}, nil
+}
+
+func (m *Manager) startVM(correlationID string, payload model.StartPayload) (model.CommandResponse, error) {
+	st, err := m.store.LoadInstance(payload.InstanceID)
+	if err != nil {
+		resp := failure(correlationID, "VM_NOT_FOUND", "instance state not found")
+		return resp, err
+	}
+	if st.Status == "running" {
+		return model.CommandResponse{
+			CorrelationID: correlationID,
+			Success:       true,
+			Result: map[string]any{
+				"status":           "running",
+				"ip_address":       st.IPAddress,
+				"console_vnc_port": st.ConsoleVNCPort,
+			},
+		}, nil
+	}
+	if st.Status != "stopped" {
+		err := fmt.Errorf("cannot start vm from status %s", st.Status)
+		return failure(correlationID, "VALIDATION_ERROR", err.Error()), err
+	}
+
+	netSpec := networkSpecFromState(st)
 	if err := m.network.Ensure(netSpec); err != nil {
 		resp := failure(correlationID, "NETWORK_ERROR", err.Error())
 		return resp, err
@@ -262,14 +344,11 @@ func (m *Manager) updateVM(correlationID string, payload model.UpdatePayload) (m
 	if consoleVNCPort == 0 {
 		consoleVNCPort = infra.ComputeConsoleVNCPort(payload.InstanceID, m.cfg.ConsoleVNCPortBase, m.cfg.ConsoleVNCPortSpan)
 	}
-	if err := m.qemu.Start(payload.InstanceID, payload.CPU, payload.MemoryMiB, st.DiskPath, st.SeedISO, netSpec, st.PidFile, st.Monitor, consoleVNCPort); err != nil {
+	if err := m.qemu.Start(payload.InstanceID, st.CPU, st.MemoryMiB, st.DiskPath, st.SeedISO, netSpec, st.PidFile, st.Monitor, consoleVNCPort); err != nil {
 		resp := failure(correlationID, "QEMU_ERROR", err.Error())
 		return resp, err
 	}
 
-	st.CPU = payload.CPU
-	st.MemoryMiB = payload.MemoryMiB
-	st.DiskGiB = payload.DiskGiB
 	st.Status = "running"
 	st.ConsoleVNCPort = consoleVNCPort
 	if err := m.store.SaveInstance(st); err != nil {
@@ -284,6 +363,46 @@ func (m *Manager) updateVM(correlationID string, payload model.UpdatePayload) (m
 			"status":           "running",
 			"ip_address":       st.IPAddress,
 			"console_vnc_port": consoleVNCPort,
+		},
+	}, nil
+}
+
+func (m *Manager) stopVM(correlationID string, payload model.StopPayload) (model.CommandResponse, error) {
+	st, err := m.store.LoadInstance(payload.InstanceID)
+	if err != nil {
+		resp := failure(correlationID, "VM_NOT_FOUND", "instance state not found")
+		return resp, err
+	}
+	if st.Status != "running" && st.Status != "stopped" {
+		err := fmt.Errorf("cannot stop vm from status %s", st.Status)
+		return failure(correlationID, "VALIDATION_ERROR", err.Error()), err
+	}
+
+	if st.Status == "running" {
+		if err := m.qemu.Powerdown(st.Monitor, st.PidFile, 15*time.Second, 10*time.Second); err != nil {
+			resp := failure(correlationID, "QEMU_ERROR", err.Error())
+			return resp, err
+		}
+	}
+	netSpec := networkSpecFromState(st)
+	if err := m.network.Delete(netSpec); err != nil {
+		resp := failure(correlationID, "NETWORK_ERROR", err.Error())
+		return resp, err
+	}
+	_ = m.network.CleanupByInstanceID(payload.InstanceID)
+
+	st.Status = "stopped"
+	if err := m.store.SaveInstance(st); err != nil {
+		resp := failure(correlationID, "QEMU_ERROR", err.Error())
+		return resp, err
+	}
+	return model.CommandResponse{
+		CorrelationID: correlationID,
+		Success:       true,
+		Result: map[string]any{
+			"status":           "stopped",
+			"ip_address":       st.IPAddress,
+			"console_vnc_port": st.ConsoleVNCPort,
 		},
 	}, nil
 }
@@ -337,7 +456,7 @@ func (m *Manager) cancelVM(correlationID string, payload model.CancelPayload) (m
 		return failure(correlationID, "VALIDATION_ERROR", "invalid target_task_id"), err
 	}
 	switch payload.TargetCommand {
-	case "create", "update", "delete":
+	case "create", "update", "delete", "start", "stop":
 	default:
 		err := fmt.Errorf("invalid target_command")
 		return failure(correlationID, "VALIDATION_ERROR", err.Error()), err
@@ -467,4 +586,13 @@ func valueOrEmpty(v *string) string {
 		return ""
 	}
 	return *v
+}
+
+func networkSpecFromState(st infra.InstanceState) infra.NetworkSpec {
+	return infra.NetworkSpec{
+		TapIf:    st.TapIf,
+		BridgeIf: st.BridgeIf,
+		HostIP:   st.HostIP,
+		VMIP:     st.IPAddress,
+	}
 }

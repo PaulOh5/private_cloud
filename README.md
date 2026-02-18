@@ -13,6 +13,7 @@ This repository contains an MSA MVP with three services:
 - Tenancy/Quota:
   - Multi-tenant model with `tenants` + per-tenant hard quota (`instances/cpu/memory/disk`).
   - Quota is enforced on `create/update/retry`.
+  - `stopped` instances keep `instances/disk` reserved, but release `cpu/memory`; `start` re-checks quota.
   - `admin` can operate across tenants, `operator/viewer` are tenant-scoped.
 - Communication:
   - Command path: `main-api -> RabbitMQ(vm.commands) -> vm-manager`
@@ -109,6 +110,8 @@ This is development/PoC only. VM root password is intentionally fixed to `1234` 
   - optional request field: `image_id` (if omitted, vm-manager default image is used)
 - `PUT /instances/{id}` -> `202 + task_id`
 - `DELETE /instances/{id}` -> `202 + task_id`
+- `POST /instances/{id}/stop` -> `202 + task_id`
+- `POST /instances/{id}/start` -> `202 + task_id`
 - `GET /instances` (admin can filter by `tenant_id`)
 - `GET /instances/{id}`
 - `POST /instances/{id}/console-ticket` (operator/admin)
@@ -132,7 +135,7 @@ All `/images`, `/instances`, and `/tasks` endpoints require `Authorization: Bear
 - QEMU VNC ports are exposed on host range derived from `CONSOLE_VNC_PORT_BASE` and `CONSOLE_VNC_PORT_SPAN`; enforce host firewall/network restrictions in non-local environments.
 
 ## State model
-- Instance: `creating_pending | updating_pending | deleting_pending | running | stopped | error | deleted`
+- Instance: `creating_pending | updating_pending | starting_pending | stopping_pending | deleting_pending | running | stopped | error | deleted`
 - Task: `queued | running | cancel_pending | succeeded | failed | canceled`
 
 ## Testing `frontend`

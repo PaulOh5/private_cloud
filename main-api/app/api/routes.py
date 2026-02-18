@@ -38,6 +38,8 @@ from app.application.commands.create_instance import CreateInstanceCommand, Crea
 from app.application.commands.cancel_task import CancelTaskCommand, CancelTaskHandler
 from app.application.commands.delete_instance import DeleteInstanceCommand, DeleteInstanceHandler
 from app.application.commands.retry_task import RetryTaskCommand, RetryTaskHandler
+from app.application.commands.start_instance import StartInstanceCommand, StartInstanceHandler
+from app.application.commands.stop_instance import StopInstanceCommand, StopInstanceHandler
 from app.application.commands.update_instance import UpdateInstanceCommand, UpdateInstanceHandler
 from app.application.services.console_port import compute_console_vnc_port
 from app.application.queries.get_instance import GetInstanceHandler
@@ -281,6 +283,87 @@ def delete_instance(
         session=session,
         request=request,
         action="instance.delete.requested",
+        target_type="instance",
+        target_id=str(instance_id),
+        actor_user=current_user,
+        tenant_id=existing.tenant_id,
+        metadata={"task_id": str(accepted.task_id)},
+    )
+    session.commit()
+    return InstanceTaskAcceptedResponse(
+        task_id=accepted.task_id,
+        instance_id=accepted.instance_id,
+        status=accepted.status,
+        command=accepted.command,
+        accepted_at=accepted.accepted_at,
+    )
+
+
+@instance_router.post("/{instance_id}/stop", response_model=InstanceTaskAcceptedResponse, status_code=202)
+def stop_instance(
+    instance_id: UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles("operator", "admin")),
+):
+    ensure_mutation_allowed_for_user_tenant(session, current_user)
+    existing = PostgresInstanceReadRepository(session).get(instance_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+    ensure_instance_access(current_user, existing.tenant_id)
+    advisory_lock(session)
+    handler = StopInstanceHandler(
+        write_repository=PostgresInstanceRepository(session),
+        task_repository=PostgresTaskRepository(session),
+        provisioning=request.app.state.vm_port,
+    )
+    accepted = handler.handle(StopInstanceCommand(instance_id=instance_id))
+    write_audit_log(
+        session=session,
+        request=request,
+        action="instance.stop.requested",
+        target_type="instance",
+        target_id=str(instance_id),
+        actor_user=current_user,
+        tenant_id=existing.tenant_id,
+        metadata={"task_id": str(accepted.task_id)},
+    )
+    session.commit()
+    return InstanceTaskAcceptedResponse(
+        task_id=accepted.task_id,
+        instance_id=accepted.instance_id,
+        status=accepted.status,
+        command=accepted.command,
+        accepted_at=accepted.accepted_at,
+    )
+
+
+@instance_router.post("/{instance_id}/start", response_model=InstanceTaskAcceptedResponse, status_code=202)
+def start_instance(
+    instance_id: UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_roles("operator", "admin")),
+):
+    settings: Settings = request.app.state.settings
+    ensure_mutation_allowed_for_user_tenant(session, current_user)
+    existing = PostgresInstanceReadRepository(session).get(instance_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+    ensure_instance_access(current_user, existing.tenant_id)
+    advisory_lock(session)
+    handler = StartInstanceHandler(
+        write_repository=PostgresInstanceRepository(session),
+        task_repository=PostgresTaskRepository(session),
+        provisioning=request.app.state.vm_port,
+        accounting=HostResourceAccountingAdapter(session),
+        quota_accounting=TenantQuotaAccountingAdapter(session),
+    )
+    accepted = handler.handle(StartInstanceCommand(instance_id=instance_id, host_node=settings.host_node))
+    write_audit_log(
+        session=session,
+        request=request,
+        action="instance.start.requested",
         target_type="instance",
         target_id=str(instance_id),
         actor_user=current_user,

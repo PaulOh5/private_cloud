@@ -23,14 +23,25 @@ type CreatePayload struct {
 }
 
 type UpdatePayload struct {
-	InstanceID string `json:"instance_id"`
-	CPU        int    `json:"cpu"`
-	MemoryMiB  int    `json:"memory_mib"`
-	DiskGiB    int    `json:"disk_gib"`
-	HostNode   string `json:"host_node"`
+	InstanceID      string `json:"instance_id"`
+	CPU             int    `json:"cpu"`
+	MemoryMiB       int    `json:"memory_mib"`
+	DiskGiB         int    `json:"disk_gib"`
+	HostNode        string `json:"host_node"`
+	BootAfterUpdate *bool  `json:"boot_after_update"`
 }
 
 type DeletePayload struct {
+	InstanceID string `json:"instance_id"`
+	HostNode   string `json:"host_node"`
+}
+
+type StartPayload struct {
+	InstanceID string `json:"instance_id"`
+	HostNode   string `json:"host_node"`
+}
+
+type StopPayload struct {
 	InstanceID string `json:"instance_id"`
 	HostNode   string `json:"host_node"`
 }

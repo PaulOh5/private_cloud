@@ -56,23 +56,27 @@ class RetryTaskHandler:
 
         host_node = str(source_task.request_payload.get("host_node") or instance.host_node)
         requested = self._requested_spec(source_task, instance.resource_spec)
-        if self.quota_accounting is not None and source_task.command in {"create", "update"}:
+        current_profile = self._profile_for_instance(instance.status, instance.reserve_resources)
+        requested_profile = self._requested_profile(source_task.command, source_task.request_payload)
+        if self.quota_accounting is not None and source_task.command in {"create", "update", "start"}:
             self.quota_accounting.assert_quota(
                 TenantQuotaCheckInput(
                     tenant_id=instance.tenant_id,
                     current=instance.resource_spec,
                     requested=requested,
-                    current_reserved=instance.reserve_resources,
-                    requested_reserved=True,
+                    current_profile=current_profile,
+                    requested_profile=requested_profile,
                 )
             )
-        if source_task.command == "create":
+        if source_task.command in {"create", "update", "start"}:
             self.accounting.assert_capacity(
-                CapacityCheckInput(host_node=host_node, current=None, requested=requested)
-            )
-        if source_task.command == "update":
-            self.accounting.assert_capacity(
-                CapacityCheckInput(host_node=host_node, current=instance.resource_spec, requested=requested)
+                CapacityCheckInput(
+                    host_node=host_node,
+                    current=instance.resource_spec,
+                    requested=requested,
+                    current_profile=current_profile,
+                    requested_profile=requested_profile,
+                )
             )
 
         now = datetime.now(timezone.utc)
@@ -121,6 +125,22 @@ class RetryTaskHandler:
             disk_gib=int(payload.get("disk_gib", fallback.disk_gib)),
         )
 
+    def _profile_for_instance(self, status: str, reserve_resources: bool) -> str:
+        if not reserve_resources:
+            return "none"
+        if status == "stopped":
+            return "stopped"
+        return "running"
+
+    def _requested_profile(self, command: str, request_payload: dict) -> str:
+        if command == "stop":
+            return "stopped"
+        if command == "update" and not bool(request_payload.get("boot_after_update", True)):
+            return "stopped"
+        if command in {"create", "update", "start"}:
+            return "running"
+        return "none"
+
     def _command_payload(
         self,
         *,
@@ -144,13 +164,15 @@ class RetryTaskHandler:
             return payload
 
         if command == "update":
-            return {
+            payload = {
                 "instance_id": str(instance_id),
                 "cpu": int(request_payload.get("cpu")),
                 "memory_mib": int(request_payload.get("memory_mib")),
                 "disk_gib": int(request_payload.get("disk_gib")),
                 "host_node": host_node,
             }
+            payload["boot_after_update"] = bool(request_payload.get("boot_after_update", True))
+            return payload
 
         return {
             "instance_id": str(instance_id),

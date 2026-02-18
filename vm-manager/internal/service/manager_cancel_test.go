@@ -35,6 +35,30 @@ func TestDispatchCancelCommandSuccess(t *testing.T) {
 	}
 }
 
+func TestDispatchCancelCommandSupportsStartStopTarget(t *testing.T) {
+	m := &Manager{}
+	payload, err := json.Marshal(model.CancelPayload{
+		InstanceID:    "123e4567-e89b-12d3-a456-426614174000",
+		TargetTaskID:  "223e4567-e89b-12d3-a456-426614174000",
+		TargetCommand: "start",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	resp, dispatchErr := m.dispatch(model.CommandMessage{
+		CorrelationID: "corr-start",
+		Command:       "instance.cancel",
+		Payload:       payload,
+	})
+	if dispatchErr != nil {
+		t.Fatalf("dispatch returned error: %v", dispatchErr)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success response, got %+v", resp)
+	}
+}
+
 func TestDispatchCancelCommandValidationError(t *testing.T) {
 	m := &Manager{}
 	payload, err := json.Marshal(model.CancelPayload{
