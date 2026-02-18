@@ -23,8 +23,6 @@ type InstanceState struct {
 	ConsoleVNCPort int    `json:"console_vnc_port"`
 	TapIf          string `json:"tap_if"`
 	BridgeIf       string `json:"bridge_if"`
-	VethHostIf     string `json:"veth_host_if"`
-	VethBrIf       string `json:"veth_br_if"`
 	DiskPath       string `json:"disk_path"`
 	SeedISO        string `json:"seed_iso"`
 	PidFile        string `json:"pid_file"`

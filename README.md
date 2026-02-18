@@ -30,7 +30,7 @@ This repository contains an MSA MVP with three services:
 - Deployment baseline:
   - `docker-compose` for `main-api`, `postgres`, `rabbitmq`
   - `vm-manager` runs with host-level privileges for QEMU/network operations.
-  - VM egress networking: `vm-manager` enables IPv4 forwarding and installs interface-scoped iptables NAT/forward rules for `172.30.0.0/16` using dedicated chains (`VM_MANAGER_FORWARD`, `VM_MANAGER_NAT`) with `vm-manager` comments.
+  - VM egress networking: `vm-manager` enables IPv4 forwarding and installs interface-scoped iptables NAT/forward rules for `172.30.0.0/16` using dedicated chains (`VM_MANAGER_FORWARD`, `VM_MANAGER_NAT`) with `vm-manager` comments (`br+` bridge matching).
 
 ## Security notice
 This is development/PoC only. VM root password is intentionally fixed to `1234` and must never be used in production.

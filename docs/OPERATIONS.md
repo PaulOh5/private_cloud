@@ -6,6 +6,10 @@
 - Privileged execution for `vm-manager`
 - `main-api` must reach host QEMU VNC ports (default via `host.docker.internal`)
 
+## VM network topology notes
+- `vm-manager` uses `tap + bridge` networking. The bridge (`br-<suffix>`) is the VM gateway (`172.30.x.1`).
+- Forward/NAT rules are managed through dedicated chains (`VM_MANAGER_FORWARD`, `VM_MANAGER_NAT`) and match VM traffic via bridge interfaces (`br+`).
+
 ## Security warnings
 - This MVP intentionally sets VM root password to `1234` via cloud-init.
 - This must never be used in production.
