@@ -3,6 +3,8 @@ export type Role = 'admin' | 'operator' | 'viewer'
 export type InstanceStatus =
   | 'creating_pending'
   | 'updating_pending'
+  | 'starting_pending'
+  | 'stopping_pending'
   | 'deleting_pending'
   | 'running'
   | 'stopped'
@@ -10,7 +12,7 @@ export type InstanceStatus =
   | 'deleted'
 
 export type TaskStatus = 'queued' | 'running' | 'cancel_pending' | 'succeeded' | 'failed' | 'canceled'
-export type TaskCommand = 'create' | 'update' | 'delete'
+export type TaskCommand = 'create' | 'update' | 'delete' | 'start' | 'stop'
 
 export interface PaginationResponse<T> {
   items: T[]

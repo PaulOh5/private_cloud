@@ -53,13 +53,19 @@ class CreateInstanceHandler:
                     tenant_id=command.tenant_id,
                     current=None,
                     requested=spec,
-                    current_reserved=False,
-                    requested_reserved=True,
+                    current_profile="none",
+                    requested_profile="running",
                 )
             )
 
         self.accounting.assert_capacity(
-            CapacityCheckInput(host_node=command.host_node, current=None, requested=spec)
+            CapacityCheckInput(
+                host_node=command.host_node,
+                current=None,
+                requested=spec,
+                current_profile="none",
+                requested_profile="running",
+            )
         )
 
         instance_id = uuid4()

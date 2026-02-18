@@ -496,3 +496,259 @@ def test_retry_cancel_audit_logs_are_written(api_client: TestClient):
     )
     assert cancel_logs.status_code == 200, cancel_logs.text
     assert any(item["target_id"] == cancel_task_id for item in cancel_logs.json()["items"])
+
+
+@pytest.mark.integration
+def test_stop_start_endpoints_create_tasks_and_audit_logs(api_client: TestClient):
+    admin_tokens = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
+
+    create_resp = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"tenant_id": DEFAULT_TENANT_ID, "name": "stop-start-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert create_resp.status_code == 202, create_resp.text
+    create_task_id = create_resp.json()["task_id"]
+    instance_id = create_resp.json()["instance_id"]
+
+    with api_client.app.state.session_factory() as session:
+        now = datetime.now(timezone.utc)
+        session.execute(
+            text(
+                """
+                UPDATE instance_tasks
+                SET status = 'succeeded',
+                    finished_at = :now,
+                    updated_at = :now
+                WHERE id = :task_id
+                """
+            ),
+            {"task_id": create_task_id, "now": now},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE instances
+                SET status = 'running',
+                    reserve_resources = true,
+                    updated_at = :now
+                WHERE id = :instance_id
+                """
+            ),
+            {"instance_id": instance_id, "now": now},
+        )
+        session.commit()
+
+    stop_resp = api_client.post(f"/instances/{instance_id}/stop", headers=headers)
+    assert stop_resp.status_code == 202, stop_resp.text
+    assert stop_resp.json()["command"] == "stop"
+    stop_task_id = stop_resp.json()["task_id"]
+
+    with api_client.app.state.session_factory() as session:
+        now = datetime.now(timezone.utc)
+        session.execute(
+            text(
+                """
+                UPDATE instance_tasks
+                SET status = 'succeeded',
+                    finished_at = :now,
+                    updated_at = :now
+                WHERE id = :task_id
+                """
+            ),
+            {"task_id": stop_task_id, "now": now},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE instances
+                SET status = 'stopped',
+                    reserve_resources = true,
+                    updated_at = :now
+                WHERE id = :instance_id
+                """
+            ),
+            {"instance_id": instance_id, "now": now},
+        )
+        session.commit()
+
+    start_resp = api_client.post(f"/instances/{instance_id}/start", headers=headers)
+    assert start_resp.status_code == 202, start_resp.text
+    assert start_resp.json()["command"] == "start"
+
+    stop_logs = api_client.get(
+        "/audit-logs",
+        headers=headers,
+        params={"action": "instance.stop.requested", "target_type": "instance"},
+    )
+    assert stop_logs.status_code == 200, stop_logs.text
+    assert any(item["target_id"] == instance_id for item in stop_logs.json()["items"])
+
+    start_logs = api_client.get(
+        "/audit-logs",
+        headers=headers,
+        params={"action": "instance.start.requested", "target_type": "instance"},
+    )
+    assert start_logs.status_code == 200, start_logs.text
+    assert any(item["target_id"] == instance_id for item in start_logs.json()["items"])
+
+
+@pytest.mark.integration
+def test_start_from_stopped_fails_when_tenant_quota_exceeded(api_client: TestClient):
+    admin_tokens = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
+
+    tenant_key = f"tenant-start-quota-{uuid4().hex[:8]}"
+    create_tenant = api_client.post(
+        "/tenants",
+        headers=headers,
+        json={
+            "key": tenant_key,
+            "name": "Start Quota Tenant",
+            "is_active": True,
+            "max_instances": 2,
+            "max_cpu": 2,
+            "max_memory_mib": 4096,
+            "max_disk_gib": 100,
+        },
+    )
+    assert create_tenant.status_code == 201, create_tenant.text
+    tenant_id = create_tenant.json()["id"]
+
+    vm1_resp = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"tenant_id": tenant_id, "name": "quota-run", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert vm1_resp.status_code == 202, vm1_resp.text
+    vm1_id = vm1_resp.json()["instance_id"]
+    vm1_task = vm1_resp.json()["task_id"]
+
+    vm2_resp = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"tenant_id": tenant_id, "name": "quota-stop", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert vm2_resp.status_code == 202, vm2_resp.text
+    vm2_id = vm2_resp.json()["instance_id"]
+    vm2_task = vm2_resp.json()["task_id"]
+
+    with api_client.app.state.session_factory() as session:
+        now = datetime.now(timezone.utc)
+        session.execute(
+            text(
+                """
+                UPDATE instance_tasks
+                SET status = 'succeeded',
+                    finished_at = :now,
+                    updated_at = :now
+                WHERE id IN (:task1, :task2)
+                """
+            ),
+            {"task1": vm1_task, "task2": vm2_task, "now": now},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE instances
+                SET status = CASE
+                    WHEN id = :vm1_id THEN 'running'
+                    WHEN id = :vm2_id THEN 'stopped'
+                    ELSE status
+                END,
+                    reserve_resources = true,
+                    updated_at = :now
+                WHERE id IN (:vm1_id, :vm2_id)
+                """
+            ),
+            {"vm1_id": vm1_id, "vm2_id": vm2_id, "now": now},
+        )
+        session.commit()
+
+    reduce_quota = api_client.patch(
+        f"/tenants/{tenant_id}/quota",
+        headers=headers,
+        json={
+            "max_instances": 2,
+            "max_cpu": 1,
+            "max_memory_mib": 4096,
+            "max_disk_gib": 100,
+        },
+    )
+    assert reduce_quota.status_code == 200, reduce_quota.text
+
+    start_resp = api_client.post(f"/instances/{vm2_id}/start", headers=headers)
+    assert start_resp.status_code == 409, start_resp.text
+    assert start_resp.json()["code"] == "QUOTA_EXCEEDED"
+
+
+@pytest.mark.integration
+def test_start_from_stopped_fails_when_host_capacity_exceeded(api_client: TestClient):
+    admin_tokens = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
+
+    vm1_resp = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"tenant_id": DEFAULT_TENANT_ID, "name": "cap-run", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert vm1_resp.status_code == 202, vm1_resp.text
+    vm1_id = vm1_resp.json()["instance_id"]
+    vm1_task = vm1_resp.json()["task_id"]
+
+    vm2_resp = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"tenant_id": DEFAULT_TENANT_ID, "name": "cap-stop", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert vm2_resp.status_code == 202, vm2_resp.text
+    vm2_id = vm2_resp.json()["instance_id"]
+    vm2_task = vm2_resp.json()["task_id"]
+
+    with api_client.app.state.session_factory() as session:
+        now = datetime.now(timezone.utc)
+        session.execute(
+            text(
+                """
+                UPDATE instance_tasks
+                SET status = 'succeeded',
+                    finished_at = :now,
+                    updated_at = :now
+                WHERE id IN (:task1, :task2)
+                """
+            ),
+            {"task1": vm1_task, "task2": vm2_task, "now": now},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE instances
+                SET status = CASE
+                    WHEN id = :vm1_id THEN 'running'
+                    WHEN id = :vm2_id THEN 'stopped'
+                    ELSE status
+                END,
+                    reserve_resources = true,
+                    updated_at = :now
+                WHERE id IN (:vm1_id, :vm2_id)
+                """
+            ),
+            {"vm1_id": vm1_id, "vm2_id": vm2_id, "now": now},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE resource_capacity
+                SET total_cpu = 1,
+                    total_memory_mib = 2048,
+                    total_disk_gib = 5000
+                WHERE host_node = 'localhost'
+                """
+            )
+        )
+        session.commit()
+
+    start_resp = api_client.post(f"/instances/{vm2_id}/start", headers=headers)
+    assert start_resp.status_code == 409, start_resp.text
+    assert start_resp.json()["code"] == "CAPACITY_EXCEEDED"

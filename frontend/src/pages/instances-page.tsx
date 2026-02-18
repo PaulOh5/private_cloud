@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Eye, Plus, RefreshCcw, Settings2, Trash2 } from 'lucide-react'
+import { Eye, PauseCircle, PlayCircle, Plus, RefreshCcw, Settings2, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { Link } from 'react-router-dom'
@@ -13,6 +13,8 @@ import {
   deleteInstance,
   listInstances,
   listVmImages,
+  startInstance,
+  stopInstance,
   updateInstance,
   type CreateInstancePayload,
   type UpdateInstancePayload,
@@ -67,6 +69,8 @@ const statusOptions = [
   { value: '', label: '전체 상태' },
   { value: 'creating_pending', label: 'creating_pending' },
   { value: 'updating_pending', label: 'updating_pending' },
+  { value: 'starting_pending', label: 'starting_pending' },
+  { value: 'stopping_pending', label: 'stopping_pending' },
   { value: 'deleting_pending', label: 'deleting_pending' },
   { value: 'running', label: 'running' },
   { value: 'stopped', label: 'stopped' },
@@ -236,6 +240,30 @@ export function InstancesPage() {
       toast.success(`삭제 요청이 등록되었습니다. task_id=${result.task_id}`)
       setDeleteTarget(null)
       setDeleteConfirm('')
+      void queryClient.invalidateQueries({ queryKey: ['instances'] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    },
+    onError: (error) => {
+      toast.error(resolveErrorMessage(error))
+    },
+  })
+
+  const startMutation = useMutation({
+    mutationFn: (id: string) => startInstance(id),
+    onSuccess: (result) => {
+      toast.success(`시작 요청이 등록되었습니다. task_id=${result.task_id}`)
+      void queryClient.invalidateQueries({ queryKey: ['instances'] })
+      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    },
+    onError: (error) => {
+      toast.error(resolveErrorMessage(error))
+    },
+  })
+
+  const stopMutation = useMutation({
+    mutationFn: (id: string) => stopInstance(id),
+    onSuccess: (result) => {
+      toast.success(`중지 요청이 등록되었습니다. task_id=${result.task_id}`)
       void queryClient.invalidateQueries({ queryKey: ['instances'] })
       void queryClient.invalidateQueries({ queryKey: ['tasks'] })
     },
@@ -418,6 +446,34 @@ export function InstancesPage() {
                             </Button>
                             {canManage ? (
                               <>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    if (item.status === 'running') {
+                                      stopMutation.mutate(item.id)
+                                    } else {
+                                      startMutation.mutate(item.id)
+                                    }
+                                  }}
+                                  disabled={
+                                    item.status.endsWith('_pending') ||
+                                    item.status === 'deleted' ||
+                                    (item.status !== 'running' && item.status !== 'stopped') ||
+                                    startMutation.isPending ||
+                                    stopMutation.isPending
+                                  }
+                                >
+                                  {item.status === 'running' ? (
+                                    <>
+                                      <PauseCircle className="mr-1 h-4 w-4" /> 중지
+                                    </>
+                                  ) : (
+                                    <>
+                                      <PlayCircle className="mr-1 h-4 w-4" /> 시작
+                                    </>
+                                  )}
+                                </Button>
                                 <Button size="sm" variant="outline" onClick={() => setUpdateTarget(item)}>
                                   <Settings2 className="mr-1 h-4 w-4" /> 수정
                                 </Button>

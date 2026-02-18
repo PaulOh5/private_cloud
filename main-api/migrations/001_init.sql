@@ -84,22 +84,26 @@ BEGIN
         ALTER TABLE instances DROP CONSTRAINT instances_status_check;
     END IF;
 
-    IF NOT EXISTS (
+    IF EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conname = 'instances_status_check_async'
     ) THEN
-        ALTER TABLE instances
-            ADD CONSTRAINT instances_status_check_async
-            CHECK (status IN (
-                'creating_pending',
-                'updating_pending',
-                'deleting_pending',
-                'running',
-                'stopped',
-                'error',
-                'deleted'
-            ));
+        ALTER TABLE instances DROP CONSTRAINT instances_status_check_async;
     END IF;
+
+    ALTER TABLE instances
+        ADD CONSTRAINT instances_status_check_async
+        CHECK (status IN (
+            'creating_pending',
+            'updating_pending',
+            'starting_pending',
+            'stopping_pending',
+            'deleting_pending',
+            'running',
+            'stopped',
+            'error',
+            'deleted'
+        ));
 END $$;
 
 CREATE INDEX IF NOT EXISTS instances_tenant_id_idx ON instances (tenant_id);
@@ -114,7 +118,7 @@ CREATE TABLE IF NOT EXISTS resource_capacity (
 CREATE TABLE IF NOT EXISTS instance_tasks (
     id UUID PRIMARY KEY,
     instance_id UUID NOT NULL REFERENCES instances (id),
-    command TEXT NOT NULL CHECK (command IN ('create', 'update', 'delete')),
+    command TEXT NOT NULL CHECK (command IN ('create', 'update', 'delete', 'start', 'stop')),
     status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'cancel_pending', 'succeeded', 'failed', 'canceled')),
     request_id UUID NOT NULL UNIQUE,
     request_payload JSONB NOT NULL,
@@ -135,6 +139,27 @@ CREATE TABLE IF NOT EXISTS instance_tasks (
 ALTER TABLE instance_tasks ADD COLUMN IF NOT EXISTS retry_of_task_id UUID NULL;
 ALTER TABLE instance_tasks ADD COLUMN IF NOT EXISTS canceled_by UUID NULL;
 ALTER TABLE instance_tasks ADD COLUMN IF NOT EXISTS cancel_reason TEXT NULL;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'instance_tasks_command_check'
+    ) THEN
+        ALTER TABLE instance_tasks DROP CONSTRAINT instance_tasks_command_check;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'instance_tasks_command_check_async'
+    ) THEN
+        ALTER TABLE instance_tasks DROP CONSTRAINT instance_tasks_command_check_async;
+    END IF;
+
+    ALTER TABLE instance_tasks
+        ADD CONSTRAINT instance_tasks_command_check_async
+        CHECK (command IN ('create', 'update', 'delete', 'start', 'stop'));
+END $$;
 
 DO $$
 BEGIN
@@ -268,8 +293,8 @@ CREATE INDEX IF NOT EXISTS audit_logs_tenant_id_idx ON audit_logs (tenant_id);
 CREATE OR REPLACE VIEW resource_reservations_view AS
 SELECT
     host_node,
-    COALESCE(SUM(cpu), 0) AS reserved_cpu,
-    COALESCE(SUM(memory_mib), 0) AS reserved_memory_mib,
+    COALESCE(SUM(cpu) FILTER (WHERE status <> 'stopped'), 0) AS reserved_cpu,
+    COALESCE(SUM(memory_mib) FILTER (WHERE status <> 'stopped'), 0) AS reserved_memory_mib,
     COALESCE(SUM(disk_gib), 0) AS reserved_disk_gib
 FROM instances
 WHERE reserve_resources = true
@@ -280,8 +305,8 @@ CREATE OR REPLACE VIEW tenant_resource_usage_view AS
 SELECT
     tenant_id,
     COUNT(*) FILTER (WHERE reserve_resources = true AND status <> 'deleted') AS used_instances,
-    COALESCE(SUM(cpu) FILTER (WHERE reserve_resources = true AND status <> 'deleted'), 0) AS used_cpu,
-    COALESCE(SUM(memory_mib) FILTER (WHERE reserve_resources = true AND status <> 'deleted'), 0) AS used_memory_mib,
+    COALESCE(SUM(cpu) FILTER (WHERE reserve_resources = true AND status <> 'deleted' AND status <> 'stopped'), 0) AS used_cpu,
+    COALESCE(SUM(memory_mib) FILTER (WHERE reserve_resources = true AND status <> 'deleted' AND status <> 'stopped'), 0) AS used_memory_mib,
     COALESCE(SUM(disk_gib) FILTER (WHERE reserve_resources = true AND status <> 'deleted'), 0) AS used_disk_gib
 FROM instances
 GROUP BY tenant_id;

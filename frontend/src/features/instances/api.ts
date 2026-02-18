@@ -49,6 +49,16 @@ export async function deleteInstance(instanceId: string): Promise<TaskAccepted> 
   return response.data
 }
 
+export async function stopInstance(instanceId: string): Promise<TaskAccepted> {
+  const response = await apiClient.post<TaskAccepted>(`/instances/${instanceId}/stop`)
+  return response.data
+}
+
+export async function startInstance(instanceId: string): Promise<TaskAccepted> {
+  const response = await apiClient.post<TaskAccepted>(`/instances/${instanceId}/start`)
+  return response.data
+}
+
 export async function issueConsoleTicket(instanceId: string): Promise<ConsoleTicketResponse> {
   const response = await apiClient.post<ConsoleTicketResponse>(`/instances/${instanceId}/console-ticket`)
   return response.data

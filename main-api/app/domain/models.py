@@ -8,13 +8,15 @@ from .errors import ValidationError
 InstanceStatus = Literal[
     "creating_pending",
     "updating_pending",
+    "starting_pending",
+    "stopping_pending",
     "deleting_pending",
     "running",
     "stopped",
     "error",
     "deleted",
 ]
-TaskCommand = Literal["create", "update", "delete"]
+TaskCommand = Literal["create", "update", "delete", "start", "stop"]
 TaskStatus = Literal["queued", "running", "cancel_pending", "succeeded", "failed", "canceled"]
 
 

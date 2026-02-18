@@ -49,6 +49,8 @@ class RabbitMqVmProvisioningAdapter(VmProvisioningPort):
         channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.create")
         channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.update")
         channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.delete")
+        channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.start")
+        channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.stop")
         channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.cancel")
         channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="image.sync")
 

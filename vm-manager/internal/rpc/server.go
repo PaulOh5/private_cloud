@@ -75,7 +75,15 @@ func declareTopology(ch *amqp.Channel) error {
 	}); err != nil {
 		return err
 	}
-	for _, key := range []string{"instance.create", "instance.update", "instance.delete", "instance.cancel", "image.sync"} {
+	for _, key := range []string{
+		"instance.create",
+		"instance.update",
+		"instance.delete",
+		"instance.start",
+		"instance.stop",
+		"instance.cancel",
+		"image.sync",
+	} {
 		if err := ch.QueueBind(commandQueue, key, commandExchange, false, nil); err != nil {
 			return err
 		}

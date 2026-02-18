@@ -3,6 +3,8 @@ import type { InstanceStatus, TaskStatus } from '@/types/api'
 export const instanceStatusLabel: Record<InstanceStatus, string> = {
   creating_pending: '생성 대기',
   updating_pending: '수정 대기',
+  starting_pending: '시작 대기',
+  stopping_pending: '중지 대기',
   deleting_pending: '삭제 대기',
   running: '실행 중',
   stopped: '중지됨',
@@ -22,6 +24,8 @@ export const taskStatusLabel: Record<TaskStatus, string> = {
 export const statusTone: Record<string, 'neutral' | 'success' | 'warning' | 'danger'> = {
   creating_pending: 'warning',
   updating_pending: 'warning',
+  starting_pending: 'warning',
+  stopping_pending: 'warning',
   deleting_pending: 'warning',
   running: 'success',
   stopped: 'neutral',

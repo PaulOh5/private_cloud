@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,5 +193,39 @@ func TestEnsureBaseImageConcurrentSingleDownload(t *testing.T) {
 	}
 	if got := strings.Count(string(raw), "\n"); got != 1 {
 		t.Fatalf("expected one download across concurrent calls, got %d", got)
+	}
+}
+
+func TestPowerdownFallsBackToTermAndKill(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "kill.log")
+	shPath := filepath.Join(tempDir, "sh")
+	script := "#!/bin/sh\necho \"$*\" >> " + logPath + "\nexit 0\n"
+	if err := os.WriteFile(shPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake sh: %v", err)
+	}
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", tempDir+":"+originalPath)
+
+	pidFile := filepath.Join(tempDir, "qemu.pid")
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
+		t.Fatalf("write pid file: %v", err)
+	}
+
+	manager := NewQemuManager(util.Runner{Timeout: time.Second})
+	if err := manager.Powerdown("", pidFile, 100*time.Millisecond, 100*time.Millisecond); err != nil {
+		t.Fatalf("powerdown should succeed with fallback: %v", err)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read kill log: %v", err)
+	}
+	logs := string(raw)
+	if !strings.Contains(logs, "kill -TERM") {
+		t.Fatalf("expected TERM fallback in logs, got %q", logs)
+	}
+	if !strings.Contains(logs, "kill -KILL") {
+		t.Fatalf("expected KILL fallback in logs, got %q", logs)
 	}
 }

@@ -111,14 +111,38 @@ class TaskResultProcessor:
             return
 
         if command == "update":
-            ip_address = (event.result or {}).get("ip_address") or request_payload.get("previous_ip_address")
+            result = event.result or {}
+            final_status = result.get("status") or "running"
+            ip_address = result.get("ip_address") or request_payload.get("previous_ip_address")
+            self.instance_repo.update_state(
+                instance_id,
+                status=final_status,
+                reserve_resources=True,
+                last_task_id=event.task_id,
+                deleted_at=None,
+                ip_address=ip_address,
+            )
+            return
+
+        if command == "start":
             self.instance_repo.update_state(
                 instance_id,
                 status="running",
                 reserve_resources=True,
                 last_task_id=event.task_id,
                 deleted_at=None,
-                ip_address=ip_address,
+                ip_address=(event.result or {}).get("ip_address") or request_payload.get("previous_ip_address"),
+            )
+            return
+
+        if command == "stop":
+            self.instance_repo.update_state(
+                instance_id,
+                status="stopped",
+                reserve_resources=True,
+                last_task_id=event.task_id,
+                deleted_at=None,
+                ip_address=(event.result or {}).get("ip_address") or request_payload.get("previous_ip_address"),
             )
             return
 

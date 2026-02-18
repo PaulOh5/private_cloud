@@ -5,6 +5,16 @@ from app.domain.errors import CapacityExceededError, QuotaExceededError, TenantI
 from app.ports.interfaces import CapacityCheckInput, TenantQuotaCheckInput
 
 
+def _profile_factors(profile: str) -> tuple[int, int, int, int]:
+    if profile == "none":
+        return (0, 0, 0, 0)
+    if profile == "stopped":
+        return (1, 0, 0, 1)
+    if profile == "running":
+        return (1, 1, 1, 1)
+    raise ValueError(f"invalid resource profile: {profile}")
+
+
 class HostResourceAccountingAdapter:
     def __init__(self, session: Session):
         self.session = session
@@ -31,13 +41,20 @@ class HostResourceAccountingAdapter:
         if not row:
             raise CapacityExceededError(f"resource capacity for host {check.host_node} not configured")
 
-        current_cpu = check.current.cpu if check.current else 0
-        current_mem = check.current.memory_mib if check.current else 0
-        current_disk = check.current.disk_gib if check.current else 0
+        _, current_cpu_factor, current_mem_factor, current_disk_factor = _profile_factors(check.current_profile)
+        _, requested_cpu_factor, requested_mem_factor, requested_disk_factor = _profile_factors(check.requested_profile)
 
-        next_cpu = int(row["reserved_cpu"]) - current_cpu + check.requested.cpu
-        next_mem = int(row["reserved_memory_mib"]) - current_mem + check.requested.memory_mib
-        next_disk = int(row["reserved_disk_gib"]) - current_disk + check.requested.disk_gib
+        current_cpu = (check.current.cpu if check.current else 0) * current_cpu_factor
+        current_mem = (check.current.memory_mib if check.current else 0) * current_mem_factor
+        current_disk = (check.current.disk_gib if check.current else 0) * current_disk_factor
+
+        requested_cpu = check.requested.cpu * requested_cpu_factor
+        requested_mem = check.requested.memory_mib * requested_mem_factor
+        requested_disk = check.requested.disk_gib * requested_disk_factor
+
+        next_cpu = int(row["reserved_cpu"]) - current_cpu + requested_cpu
+        next_mem = int(row["reserved_memory_mib"]) - current_mem + requested_mem
+        next_disk = int(row["reserved_disk_gib"]) - current_disk + requested_disk
 
         if next_cpu > int(row["total_cpu"]):
             raise CapacityExceededError("cpu capacity exceeded")
@@ -82,16 +99,23 @@ class TenantQuotaAccountingAdapter:
         if row["max_instances"] is None:
             raise QuotaExceededError(f"tenant quota for {check.tenant_id} not configured")
 
-        current_instances = 1 if check.current_reserved else 0
-        requested_instances = 1 if check.requested_reserved else 0
+        current_instance_factor, current_cpu_factor, current_mem_factor, current_disk_factor = _profile_factors(
+            check.current_profile
+        )
+        requested_instance_factor, requested_cpu_factor, requested_mem_factor, requested_disk_factor = _profile_factors(
+            check.requested_profile
+        )
 
-        current_cpu = check.current.cpu if (check.current and check.current_reserved) else 0
-        current_mem = check.current.memory_mib if (check.current and check.current_reserved) else 0
-        current_disk = check.current.disk_gib if (check.current and check.current_reserved) else 0
+        current_instances = current_instance_factor if check.current else 0
+        requested_instances = requested_instance_factor
 
-        requested_cpu = check.requested.cpu if check.requested_reserved else 0
-        requested_mem = check.requested.memory_mib if check.requested_reserved else 0
-        requested_disk = check.requested.disk_gib if check.requested_reserved else 0
+        current_cpu = (check.current.cpu if check.current else 0) * current_cpu_factor
+        current_mem = (check.current.memory_mib if check.current else 0) * current_mem_factor
+        current_disk = (check.current.disk_gib if check.current else 0) * current_disk_factor
+
+        requested_cpu = check.requested.cpu * requested_cpu_factor
+        requested_mem = check.requested.memory_mib * requested_mem_factor
+        requested_disk = check.requested.disk_gib * requested_disk_factor
 
         next_instances = int(row["used_instances"]) - current_instances + requested_instances
         next_cpu = int(row["used_cpu"]) - current_cpu + requested_cpu

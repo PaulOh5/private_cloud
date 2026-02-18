@@ -48,6 +48,28 @@ def apply_pending_instance_state(
         )
         return
 
+    if command == "start":
+        instance_repo.update_state(
+            instance.id,
+            status="starting_pending",
+            reserve_resources=True,
+            last_task_id=task_id,
+            deleted_at=instance.deleted_at,
+            ip_address=instance.ip_address,
+        )
+        return
+
+    if command == "stop":
+        instance_repo.update_state(
+            instance.id,
+            status="stopping_pending",
+            reserve_resources=True,
+            last_task_id=task_id,
+            deleted_at=instance.deleted_at,
+            ip_address=instance.ip_address,
+        )
+        return
+
     instance_repo.update_state(
         instance.id,
         status="deleting_pending",
@@ -91,6 +113,28 @@ def revert_instance_state_on_terminal_failure(
             reserve_resources=True,
             last_task_id=None,
             deleted_at=_parse_timestamp(request_payload.get("previous_deleted_at")),
+        )
+        return
+
+    if command == "start":
+        instance_repo.update_state(
+            instance_id,
+            status=request_payload.get("previous_status") or "stopped",
+            reserve_resources=bool(request_payload.get("previous_reserve_resources", True)),
+            last_task_id=None,
+            deleted_at=None,
+            ip_address=request_payload.get("previous_ip_address"),
+        )
+        return
+
+    if command == "stop":
+        instance_repo.update_state(
+            instance_id,
+            status=request_payload.get("previous_status") or "running",
+            reserve_resources=bool(request_payload.get("previous_reserve_resources", True)),
+            last_task_id=None,
+            deleted_at=None,
+            ip_address=request_payload.get("previous_ip_address"),
         )
         return
 

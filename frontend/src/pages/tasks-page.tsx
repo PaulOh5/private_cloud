@@ -120,6 +120,8 @@ export function TasksPage() {
                 <option value="create">create</option>
                 <option value="update">update</option>
                 <option value="delete">delete</option>
+                <option value="start">start</option>
+                <option value="stop">stop</option>
               </Select>
             </div>
             {isAdmin ? (
