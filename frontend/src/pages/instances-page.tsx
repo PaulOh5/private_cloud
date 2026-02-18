@@ -60,7 +60,11 @@ const instanceFormSchema = z.object({
 
 type InstanceFormValues = z.infer<typeof instanceFormSchema>
 
-const updateFormSchema = instanceFormSchema.omit({ name: true })
+const updateFormSchema = instanceFormSchema.pick({
+  cpu: true,
+  memory_mib: true,
+  disk_gib: true,
+})
 type UpdateFormValues = z.infer<typeof updateFormSchema>
 
 const pageSize = 20
