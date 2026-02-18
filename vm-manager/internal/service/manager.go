@@ -200,8 +200,6 @@ func (m *Manager) createVM(correlationID string, payload model.CreatePayload) (m
 		ConsoleVNCPort: consoleVNCPort,
 		TapIf:          netSpec.TapIf,
 		BridgeIf:       netSpec.BridgeIf,
-		VethHostIf:     netSpec.VethHost,
-		VethBrIf:       netSpec.VethBr,
 		DiskPath:       diskPath,
 		SeedISO:        seedISO,
 		PidFile:        pidFile,
@@ -253,8 +251,6 @@ func (m *Manager) updateVM(correlationID string, payload model.UpdatePayload) (m
 	netSpec := infra.NetworkSpec{
 		TapIf:    st.TapIf,
 		BridgeIf: st.BridgeIf,
-		VethHost: st.VethHostIf,
-		VethBr:   st.VethBrIf,
 		HostIP:   st.HostIP,
 		VMIP:     st.IPAddress,
 	}
@@ -312,8 +308,6 @@ func (m *Manager) deleteVM(correlationID string, payload model.DeletePayload) (m
 	netSpec := infra.NetworkSpec{
 		TapIf:    st.TapIf,
 		BridgeIf: st.BridgeIf,
-		VethHost: st.VethHostIf,
-		VethBr:   st.VethBrIf,
 	}
 	if err := m.network.Delete(netSpec); err != nil {
 		resp := failure(correlationID, "NETWORK_ERROR", err.Error())

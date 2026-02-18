@@ -25,8 +25,8 @@ func TestManagedInterfaceSuffixRejectsNonManagedFormat(t *testing.T) {
 	cases := []string{
 		"br-b69ec55c9a46",
 		"br-xyz",
-		"vethh-1234567",
 		"tap-123456789",
+		"vethh-12345678",
 	}
 	for _, ifName := range cases {
 		if _, ok := managedInterfaceSuffix(ifName); ok {

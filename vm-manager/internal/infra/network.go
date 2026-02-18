@@ -13,13 +13,11 @@ const vmSubnetSupernet = "172.30.0.0/16"
 const vmForwardChain = "VM_MANAGER_FORWARD"
 const vmNatChain = "VM_MANAGER_NAT"
 const vmRuleComment = "vm-manager"
-const vmHostVethPattern = "vethh+"
+const vmManagedBridgePattern = "br+"
 
 type NetworkSpec struct {
 	TapIf    string
 	BridgeIf string
-	VethHost string
-	VethBr   string
 	HostIP   string
 	VMIP     string
 	CIDR     string
@@ -44,8 +42,6 @@ func BuildNetworkSpec(instanceID string) NetworkSpec {
 	return NetworkSpec{
 		TapIf:    "tap-" + short,
 		BridgeIf: "br-" + short,
-		VethHost: "vethh-" + short,
-		VethBr:   "vethb-" + short,
 		HostIP:   base + ".1",
 		VMIP:     base + ".10",
 		CIDR:     base + ".0/24",
@@ -68,7 +64,7 @@ func shortInstanceID(instanceID string) string {
 }
 
 func managedInterfaceSuffix(ifName string) (string, bool) {
-	for _, prefix := range []string{"br-", "tap-", "vethh-", "vethb-"} {
+	for _, prefix := range []string{"br-", "tap-"} {
 		if strings.HasPrefix(ifName, prefix) && len(ifName) > len(prefix) {
 			suffix := ifName[len(prefix):]
 			if isManagedSuffixFormat(suffix) {
@@ -124,8 +120,6 @@ func (n *NetworkManager) CleanupBySuffix(suffix string) error {
 	spec := NetworkSpec{
 		TapIf:    "tap-" + suffix,
 		BridgeIf: "br-" + suffix,
-		VethHost: "vethh-" + suffix,
-		VethBr:   "vethb-" + suffix,
 	}
 	return n.Delete(spec)
 }
@@ -136,28 +130,21 @@ func (n *NetworkManager) CleanupByInstanceID(instanceID string) error {
 
 func (n *NetworkManager) Ensure(spec NetworkSpec) error {
 	_ = n.runner.Run("ip", "link", "del", spec.BridgeIf)
-	_ = n.runner.Run("ip", "link", "del", spec.VethHost)
 	_ = n.runner.Run("ip", "link", "del", spec.TapIf)
 
 	if err := n.runner.Run("ip", "link", "add", spec.BridgeIf, "type", "bridge"); err != nil {
 		return err
 	}
-	if err := n.runner.Run("ip", "link", "add", spec.VethHost, "type", "veth", "peer", "name", spec.VethBr); err != nil {
-		return err
-	}
 	if err := n.runner.Run("ip", "tuntap", "add", "dev", spec.TapIf, "mode", "tap"); err != nil {
-		return err
-	}
-	if err := n.runner.Run("ip", "link", "set", spec.VethBr, "master", spec.BridgeIf); err != nil {
 		return err
 	}
 	if err := n.runner.Run("ip", "link", "set", spec.TapIf, "master", spec.BridgeIf); err != nil {
 		return err
 	}
-	if err := n.runner.Run("ip", "addr", "add", spec.HostIP+"/24", "dev", spec.VethHost); err != nil {
+	if err := n.runner.Run("ip", "addr", "add", spec.HostIP+"/24", "dev", spec.BridgeIf); err != nil {
 		return err
 	}
-	for _, dev := range []string{spec.BridgeIf, spec.VethHost, spec.VethBr, spec.TapIf} {
+	for _, dev := range []string{spec.BridgeIf, spec.TapIf} {
 		if err := n.runner.Run("ip", "link", "set", dev, "up"); err != nil {
 			return err
 		}
@@ -169,7 +156,7 @@ func (n *NetworkManager) Ensure(spec NetworkSpec) error {
 }
 
 func (n *NetworkManager) Delete(spec NetworkSpec) error {
-	for _, dev := range []string{spec.BridgeIf, spec.VethHost, spec.VethBr, spec.TapIf} {
+	for _, dev := range []string{spec.BridgeIf, spec.TapIf} {
 		if dev == "" {
 			continue
 		}
@@ -206,10 +193,10 @@ func (n *NetworkManager) ensureInternetForwarding() error {
 		return err
 	}
 
-	if err := n.ensureIptablesRule("filter", vmForwardChain, []string{"-m", "comment", "--comment", vmRuleComment, "-i", vmHostVethPattern, "-o", egressIface, "-s", vmSubnetSupernet, "-j", "ACCEPT"}); err != nil {
+	if err := n.ensureIptablesRule("filter", vmForwardChain, []string{"-m", "comment", "--comment", vmRuleComment, "-i", vmManagedBridgePattern, "-o", egressIface, "-s", vmSubnetSupernet, "-j", "ACCEPT"}); err != nil {
 		return err
 	}
-	if err := n.ensureIptablesRule("filter", vmForwardChain, []string{"-m", "comment", "--comment", vmRuleComment, "-i", egressIface, "-o", vmHostVethPattern, "-d", vmSubnetSupernet, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"}); err != nil {
+	if err := n.ensureIptablesRule("filter", vmForwardChain, []string{"-m", "comment", "--comment", vmRuleComment, "-i", egressIface, "-o", vmManagedBridgePattern, "-d", vmSubnetSupernet, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"}); err != nil {
 		return err
 	}
 	if err := n.ensureIptablesRule("nat", vmNatChain, []string{"-m", "comment", "--comment", vmRuleComment, "-s", vmSubnetSupernet, "-o", egressIface, "-j", "MASQUERADE"}); err != nil {
