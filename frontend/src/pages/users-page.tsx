@@ -40,7 +40,11 @@ const createUserSchema = z.object({
   username: z.string().min(3, '아이디는 최소 3자 이상이어야 합니다.').max(64),
   password: z.string().min(8, '비밀번호는 최소 8자 이상이어야 합니다.').max(256),
   role: z.enum(['admin', 'operator', 'viewer']),
-  tenant_id: z.string().uuid('유효한 tenant_id를 선택하세요.').optional().or(z.literal('')),
+  tenant_id: z
+    .string()
+    .refine((value) => value === '' || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value), {
+      message: '유효한 tenant_id를 선택하세요.',
+    }),
   is_active: z.boolean(),
 })
 
@@ -48,7 +52,11 @@ type CreateUserForm = z.infer<typeof createUserSchema>
 
 const updateUserSchema = z.object({
   role: z.enum(['admin', 'operator', 'viewer']),
-  tenant_id: z.string().uuid('유효한 tenant_id를 선택하세요.').optional().or(z.literal('')),
+  tenant_id: z
+    .string()
+    .refine((value) => value === '' || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value), {
+      message: '유효한 tenant_id를 선택하세요.',
+    }),
   is_active: z.boolean(),
   password: z
     .string()
