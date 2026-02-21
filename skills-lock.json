@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "code-reviewer": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "ac45cbe57cf1e5f2110e6a68238c5681f97007904d65b6858daa080dc69d7abc"
+    },
+    "python-expert": {
+      "source": "Shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "computedHash": "7ddc44800aef275b3252ffa65369e214ef2a56603842e3f6721363816eb6b45f"
+    }
+  }
+}
