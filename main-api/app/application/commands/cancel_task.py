@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from app.application.commands.common import TaskAccepted
 from app.application.services.task_instance_state import revert_instance_state_on_terminal_failure
 from app.domain.errors import ConflictError, NotFoundError
-from app.ports.interfaces import InstanceRepository, TaskRepository, VmProvisioningPort
+from app.ports.interfaces import CommandOutboxRepository, InstanceRepository, TaskRepository
 
 
 @dataclass(frozen=True)
@@ -22,11 +22,13 @@ class CancelTaskHandler:
         self,
         write_repository: InstanceRepository,
         task_repository: TaskRepository,
-        provisioning: VmProvisioningPort,
+        outbox_repository: CommandOutboxRepository,
+        outbox_max_attempts: int = 20,
     ):
         self.write_repository = write_repository
         self.task_repository = task_repository
-        self.provisioning = provisioning
+        self.outbox_repository = outbox_repository
+        self.outbox_max_attempts = max(1, int(outbox_max_attempts))
 
     def handle(self, command: CancelTaskCommand) -> TaskAccepted:
         task = self.task_repository.get_for_update(command.task_id)
@@ -68,8 +70,8 @@ class CancelTaskHandler:
                 canceled_by=command.actor_user_id,
                 cancel_reason=command.reason,
             )
-            self.provisioning.publish_command(
-                command="instance.cancel",
+            self.outbox_repository.enqueue_command(
+                topic="instance.cancel",
                 payload={
                     "instance_id": str(instance.id),
                     "target_task_id": str(task.id),
@@ -78,6 +80,7 @@ class CancelTaskHandler:
                 },
                 task_id=task.id,
                 request_id=uuid4(),
+                max_attempts=self.outbox_max_attempts,
             )
             return TaskAccepted(
                 task_id=cancel_pending.id,

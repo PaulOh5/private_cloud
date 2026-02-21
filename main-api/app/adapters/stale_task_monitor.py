@@ -58,11 +58,33 @@ class StaleTaskMonitor:
                 for row in session.execute(
                     text(
                         """
-                        SELECT id
-                        FROM instance_tasks
-                        WHERE status = 'queued'
-                          AND created_at < :cutoff
-                        ORDER BY created_at ASC
+                        SELECT t.id
+                        FROM instance_tasks t
+                        WHERE t.status = 'queued'
+                          AND t.created_at < :cutoff
+                          AND (
+                              NOT EXISTS (
+                                  SELECT 1
+                                  FROM command_outbox o
+                                  WHERE o.task_id = t.id
+                                    AND o.topic = ('instance.' || t.command)
+                              )
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM command_outbox o
+                                  WHERE o.task_id = t.id
+                                    AND o.topic = ('instance.' || t.command)
+                                    AND (
+                                        (
+                                            o.status = 'sent'
+                                            AND o.sent_at IS NOT NULL
+                                            AND o.sent_at < :cutoff
+                                        )
+                                        OR o.status = 'failed'
+                                    )
+                              )
+                          )
+                        ORDER BY t.created_at ASC
                         LIMIT 100
                         FOR UPDATE SKIP LOCKED
                         """

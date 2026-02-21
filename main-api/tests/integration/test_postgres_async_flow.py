@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID
+import time
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.adapters.postgres import (
+    PostgresCommandOutboxRepository,
     PostgresInstanceRepository,
     PostgresRefreshTokenRepository,
     PostgresTaskRepository,
     PostgresUserRepository,
 )
+from app.adapters.outbox_relay import OutboxRelay
 from app.adapters.resource_accounting import HostResourceAccountingAdapter
+from app.adapters.stale_task_monitor import StaleTaskMonitor
 from app.application.commands.create_instance import CreateInstanceCommand, CreateInstanceHandler
 from app.application.commands.update_instance import UpdateInstanceCommand, UpdateInstanceHandler
 from app.domain.errors import ConflictError
@@ -28,13 +32,23 @@ class DummyProvisioning:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def publish_command(self, command: str, payload: dict, task_id, request_id) -> None:
+    def enqueue_command(
+        self,
+        *,
+        topic: str,
+        payload: dict,
+        task_id,
+        request_id,
+        max_attempts: int,
+    ) -> None:
         self.calls.append(
             {
-                "command": command,
+                "command": topic,
+                "topic": topic,
                 "payload": payload,
                 "task_id": task_id,
                 "request_id": request_id,
+                "max_attempts": max_attempts,
             }
         )
 
@@ -67,6 +81,11 @@ def session_factory(pg_container):
     return sf
 
 
+@pytest.fixture
+def listener_dsn(pg_container):
+    return pg_container.get_connection_url(driver=None)
+
+
 @pytest.mark.integration
 def test_create_handler_persists_pending_instance_and_task(session_factory):
     provisioning = DummyProvisioning()
@@ -75,7 +94,7 @@ def test_create_handler_persists_pending_instance_and_task(session_factory):
         handler = CreateInstanceHandler(
             write_repository=PostgresInstanceRepository(session),
             task_repository=PostgresTaskRepository(session),
-            provisioning=provisioning,
+            outbox_repository=provisioning,
             accounting=HostResourceAccountingAdapter(session),
         )
         accepted = handler.handle(
@@ -108,6 +127,255 @@ def test_create_handler_persists_pending_instance_and_task(session_factory):
 
 
 @pytest.mark.integration
+def test_create_handler_with_outbox_repository_persists_outbox_row(session_factory):
+    with session_factory() as session:
+        handler = CreateInstanceHandler(
+            write_repository=PostgresInstanceRepository(session),
+            task_repository=PostgresTaskRepository(session),
+            outbox_repository=PostgresCommandOutboxRepository(session, notify_channel="command_outbox_wakeup"),
+            outbox_max_attempts=7,
+            accounting=HostResourceAccountingAdapter(session),
+        )
+        accepted = handler.handle(
+            CreateInstanceCommand(
+                cpu=2,
+                memory_mib=4096,
+                disk_gib=40,
+                name="integration-outbox-vm",
+                host_node="localhost",
+            )
+        )
+        session.commit()
+
+    with session_factory() as session:
+        outbox_row = session.execute(
+            text(
+                """
+                SELECT topic, status, task_id, request_id, max_attempts
+                FROM command_outbox
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": str(accepted.task_id)},
+        ).mappings().one()
+
+    assert outbox_row["topic"] == "instance.create"
+    assert outbox_row["status"] == "queued"
+    assert UUID(str(outbox_row["task_id"])) == accepted.task_id
+    assert outbox_row["max_attempts"] == 7
+
+
+class CollectingProvisioning:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def publish_command(self, command: str, payload: dict, task_id, request_id) -> None:
+        self.calls.append(
+            {
+                "command": command,
+                "payload": payload,
+                "task_id": str(task_id),
+                "request_id": str(request_id),
+            }
+        )
+
+
+@pytest.mark.integration
+def test_outbox_relay_drains_and_marks_sent(session_factory, listener_dsn):
+    provisioning = CollectingProvisioning()
+    now = datetime.now(timezone.utc)
+    outbox_id = uuid4()
+    task_id = uuid4()
+    request_id = uuid4()
+    instance_id = uuid4()
+    with session_factory() as session:
+        session.execute(text("DELETE FROM command_outbox"))
+        session.execute(
+            text(
+                """
+                INSERT INTO command_outbox (
+                    id, topic, task_id, request_id, payload, status,
+                    attempt_count, max_attempts, next_attempt_at,
+                    locked_by, lock_expires_at, last_error, sent_at,
+                    created_at, updated_at
+                )
+                VALUES (
+                    :id, :topic, :task_id, :request_id, CAST(:payload AS JSONB), 'queued',
+                    0, 3, :next_attempt_at,
+                    NULL, NULL, NULL, NULL,
+                    :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(outbox_id),
+                "topic": "instance.create",
+                "task_id": str(task_id),
+                "request_id": str(request_id),
+                "payload": f'{{"instance_id":"{instance_id}","host_node":"localhost"}}',
+                "next_attempt_at": now,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        session.commit()
+
+    relay = OutboxRelay(
+        session_factory=session_factory,
+        provisioning=provisioning,
+        postgres_listener_dsn=listener_dsn,
+        notify_channel="command_outbox_wakeup",
+        poll_interval_seconds=0.1,
+        batch_size=50,
+        lock_timeout_seconds=10,
+        retry_max_seconds=5,
+    )
+    processed = relay._drain_available()
+    assert processed >= 1
+    assert any(call["task_id"] == str(task_id) for call in provisioning.calls)
+
+    with session_factory() as session:
+        row = session.execute(
+            text("SELECT status, sent_at FROM command_outbox WHERE id = :id"),
+            {"id": str(outbox_id)},
+        ).mappings().one()
+    assert row["status"] == "sent"
+    assert row["sent_at"] is not None
+
+
+@pytest.mark.integration
+def test_stale_monitor_ignores_outbox_not_sent_and_recovers_outbox_failed(session_factory):
+    now = datetime.now(timezone.utc)
+    stale_time = now.replace(microsecond=0)
+    instance_id = uuid4()
+    task_id = uuid4()
+    request_id = uuid4()
+    outbox_id = uuid4()
+
+    with session_factory() as session:
+        session.execute(text("DELETE FROM command_outbox"))
+        session.execute(text("DELETE FROM instance_tasks"))
+        session.execute(text("DELETE FROM instances"))
+        session.execute(
+            text(
+                """
+                INSERT INTO instances (
+                    id, tenant_id, name, cpu, memory_mib, disk_gib,
+                    status, ip_address, host_node, reserve_resources,
+                    last_task_id, deleted_at, created_at, updated_at
+                )
+                VALUES (
+                    :id, :tenant_id, :name, :cpu, :memory_mib, :disk_gib,
+                    'creating_pending', NULL, :host_node, true,
+                    NULL, NULL, :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(instance_id),
+                "tenant_id": DEFAULT_TENANT_ID,
+                "name": "stale-monitor-vm1",
+                "cpu": 1,
+                "memory_mib": 1024,
+                "disk_gib": 20,
+                "host_node": "localhost",
+                "created_at": stale_time,
+                "updated_at": stale_time,
+            },
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO instance_tasks (
+                    id, instance_id, command, status, request_id,
+                    request_payload, result_payload,
+                    error_code, error_message,
+                    retry_of_task_id, canceled_by, cancel_reason,
+                    attempt_count, max_attempts,
+                    created_at, started_at, finished_at, updated_at
+                )
+                VALUES (
+                    :id, :instance_id, 'create', 'queued', :request_id,
+                    CAST(:request_payload AS JSONB), NULL,
+                    NULL, NULL,
+                    NULL, NULL, NULL,
+                    0, 3,
+                    :created_at, NULL, NULL, :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(task_id),
+                "instance_id": str(instance_id),
+                "request_id": str(request_id),
+                "request_payload": '{"host_node":"localhost"}',
+                "created_at": stale_time,
+                "updated_at": stale_time,
+            },
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO command_outbox (
+                    id, topic, task_id, request_id, payload, status,
+                    attempt_count, max_attempts, next_attempt_at,
+                    locked_by, lock_expires_at, last_error, sent_at,
+                    created_at, updated_at
+                )
+                VALUES (
+                    :id, 'instance.create', :task_id, :request_id, CAST(:payload AS JSONB), 'queued',
+                    0, 3, :next_attempt_at,
+                    NULL, NULL, NULL, NULL,
+                    :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(outbox_id),
+                "task_id": str(task_id),
+                "request_id": str(request_id),
+                "payload": f'{{"instance_id":"{instance_id}","host_node":"localhost"}}',
+                "next_attempt_at": stale_time,
+                "created_at": stale_time,
+                "updated_at": stale_time,
+            },
+        )
+        session.commit()
+
+    monitor = StaleTaskMonitor(session_factory=session_factory, queued_timeout_seconds=1, sweep_interval_seconds=10)
+    time.sleep(1.2)
+    recovered = monitor._sweep_once()
+    assert recovered == 0
+
+    with session_factory() as session:
+        session.execute(
+            text(
+                """
+                UPDATE command_outbox
+                SET status = 'failed',
+                    last_error = 'publish failed'
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": str(outbox_id),
+            },
+        )
+        session.commit()
+
+    recovered = monitor._sweep_once()
+    assert recovered == 1
+
+    with session_factory() as session:
+        task = session.execute(
+            text("SELECT status, error_code FROM instance_tasks WHERE id = :id"),
+            {"id": str(task_id)},
+        ).mappings().one()
+    assert task["status"] == "failed"
+    assert task["error_code"] == "TIMEOUT"
+
+
+@pytest.mark.integration
 def test_update_handler_rejects_when_active_task_exists(session_factory):
     provisioning = DummyProvisioning()
 
@@ -115,7 +383,7 @@ def test_update_handler_rejects_when_active_task_exists(session_factory):
         create_handler = CreateInstanceHandler(
             write_repository=PostgresInstanceRepository(session),
             task_repository=PostgresTaskRepository(session),
-            provisioning=provisioning,
+            outbox_repository=provisioning,
             accounting=HostResourceAccountingAdapter(session),
         )
         accepted = create_handler.handle(
@@ -133,7 +401,7 @@ def test_update_handler_rejects_when_active_task_exists(session_factory):
         update_handler = UpdateInstanceHandler(
             write_repository=PostgresInstanceRepository(session),
             task_repository=PostgresTaskRepository(session),
-            provisioning=provisioning,
+            outbox_repository=provisioning,
             accounting=HostResourceAccountingAdapter(session),
         )
         with pytest.raises(ConflictError):

@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     vm_command_timeout_seconds: int = 120
     task_stale_queued_timeout_seconds: int = 180
     task_stale_sweep_interval_seconds: int = 15
+    outbox_notify_channel: str = "command_outbox_wakeup"
+    outbox_poll_interval_seconds: float = 1.0
+    outbox_batch_size: int = 100
+    outbox_lock_timeout_seconds: int = 30
+    outbox_max_attempts: int = 20
+    outbox_retry_max_seconds: int = 60
+    outbox_relay_enabled: bool = True
     base_image_url: str = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
     vm_image_catalog_json: str = ""
     vm_image_default_id: str = ""
@@ -49,6 +56,13 @@ class Settings(BaseSettings):
     def postgres_dsn(self) -> str:
         return (
             f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def postgres_listener_dsn(self) -> str:
+        return (
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 

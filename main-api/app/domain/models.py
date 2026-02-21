@@ -18,6 +18,7 @@ InstanceStatus = Literal[
 ]
 TaskCommand = Literal["create", "update", "delete", "start", "stop"]
 TaskStatus = Literal["queued", "running", "cancel_pending", "succeeded", "failed", "canceled"]
+OutboxStatus = Literal["queued", "publishing", "sent", "failed"]
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,25 @@ class InstanceTask:
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    updated_at: datetime
+
+
+@dataclass
+class OutboxMessage:
+    id: UUID
+    topic: str
+    task_id: UUID
+    request_id: UUID
+    payload: dict[str, Any]
+    status: OutboxStatus
+    attempt_count: int
+    max_attempts: int
+    next_attempt_at: datetime
+    locked_by: str | None
+    lock_expires_at: datetime | None
+    last_error: str | None
+    sent_at: datetime | None
+    created_at: datetime
     updated_at: datetime
 
 

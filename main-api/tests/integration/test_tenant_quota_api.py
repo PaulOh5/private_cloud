@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app.config import get_settings
 
@@ -62,6 +63,7 @@ def api_client(pg_container, monkeypatch):
     monkeypatch.setenv("AUTH_JWT_SECRET", "integration-secret")
     monkeypatch.setenv("BOOTSTRAP_ADMIN_USERNAME", "admin")
     monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "admin1234")
+    monkeypatch.setenv("OUTBOX_RELAY_ENABLED", "false")
 
     import app.adapters.rabbitmq_result_consumer as result_module
     import app.adapters.rabbitmq_rpc as rpc_module
@@ -96,6 +98,37 @@ def test_default_tenant_is_bootstrapped(api_client: TestClient):
     assert response.status_code == 200, response.text
     items = response.json()["items"]
     assert any(item["id"] == DEFAULT_TENANT_ID and item["key"] == "default" for item in items)
+
+
+@pytest.mark.integration
+def test_create_instance_enqueues_command_outbox(api_client: TestClient):
+    admin = _login(api_client, "admin", "admin1234")
+    headers = {"Authorization": f"Bearer {admin['access_token']}"}
+
+    created = api_client.post(
+        "/instances",
+        headers=headers,
+        json={"tenant_id": DEFAULT_TENANT_ID, "name": "outbox-api", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+
+    with api_client.app.state.session_factory() as session:
+        row = session.execute(
+            text(
+                """
+                SELECT topic, status
+                FROM command_outbox
+                WHERE task_id = :task_id
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"task_id": task_id},
+        ).mappings().one()
+
+    assert row["topic"] == "instance.create"
+    assert row["status"] in {"queued", "sent"}
 
 
 @pytest.mark.integration
