@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 from app.application.commands.common import TaskAccepted
 from app.domain.models import Instance, InstanceTask, ResourceSpec
-from app.ports.interfaces import (
+from app.ports import (
     CommandOutboxRepository,
     CapacityCheckInput,
     InstanceRepository,

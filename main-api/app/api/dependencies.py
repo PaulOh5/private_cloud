@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from dataclasses import dataclass
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
@@ -6,13 +7,43 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.adapters.postgres import PostgresInstanceReadRepository, PostgresInstanceRepository, PostgresUserRepository
-from app.adapters.rabbitmq_rpc import RabbitMqVmProvisioningAdapter
-from app.adapters.resource_accounting import HostResourceAccountingAdapter
+from app.adapters.postgres_repositories import (
+    PostgresCommandOutboxRepository,
+    PostgresInstanceReadRepository,
+    PostgresInstanceRepository,
+    PostgresTaskRepository,
+    PostgresUserRepository,
+)
+from app.adapters.resource_accounting import HostResourceAccountingAdapter, TenantQuotaAccountingAdapter
 from app.domain.auth import User
+from app.ports import (
+    CommandOutboxRepository,
+    InstanceReadRepository,
+    InstanceRepository,
+    ResourceAccountingPort,
+    TaskRepository,
+    TenantQuotaAccountingPort,
+    VmProvisioningPort,
+)
 from app.security import InvalidTokenError, decode_access_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+
+@dataclass(frozen=True)
+class VmQueryDeps:
+    read_repository: InstanceReadRepository
+    task_repository: TaskRepository
+
+
+@dataclass(frozen=True)
+class VmMutationDeps:
+    read_repository: InstanceReadRepository
+    write_repository: InstanceRepository
+    task_repository: TaskRepository
+    outbox_repository: CommandOutboxRepository
+    accounting: ResourceAccountingPort
+    quota_accounting: TenantQuotaAccountingPort
 
 
 def get_session(request: Request) -> Generator[Session, None, None]:
@@ -28,20 +59,26 @@ def advisory_lock(session: Session, key: int = 4001) -> None:
     session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
 
 
-def get_write_repo(session: Session = None):
-    return PostgresInstanceRepository(session)
-
-
-def get_read_repo(session: Session = None):
-    return PostgresInstanceReadRepository(session)
-
-
-def get_accounting(session: Session = None):
-    return HostResourceAccountingAdapter(session)
-
-
-def get_vm_port(request: Request) -> RabbitMqVmProvisioningAdapter:
+def get_vm_port(request: Request) -> VmProvisioningPort:
     return request.app.state.vm_port
+
+
+def build_vm_query_deps(session: Session) -> VmQueryDeps:
+    return VmQueryDeps(
+        read_repository=PostgresInstanceReadRepository(session),
+        task_repository=PostgresTaskRepository(session),
+    )
+
+
+def build_vm_mutation_deps(session: Session, *, outbox_notify_channel: str) -> VmMutationDeps:
+    return VmMutationDeps(
+        read_repository=PostgresInstanceReadRepository(session),
+        write_repository=PostgresInstanceRepository(session),
+        task_repository=PostgresTaskRepository(session),
+        outbox_repository=PostgresCommandOutboxRepository(session, notify_channel=outbox_notify_channel),
+        accounting=HostResourceAccountingAdapter(session),
+        quota_accounting=TenantQuotaAccountingAdapter(session),
+    )
 
 
 def get_current_user(

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -50,7 +51,7 @@ class Settings(BaseSettings):
     auth_refresh_token_expire_days: int = 14
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = "admin1234"
-    bootstrap_admin_role: str = "admin"
+    bootstrap_admin_role: Literal["admin", "operator", "viewer"] = "admin"
 
     @property
     def postgres_dsn(self) -> str:

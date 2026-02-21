@@ -9,6 +9,8 @@ from app.config import Settings
 
 _IMAGE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+_SUPPORTED_IMAGE_FORMATS = {"qcow2"}
+_SUPPORTED_IMAGE_URL_SCHEMES = {"http", "https"}
 
 
 @dataclass(frozen=True)
@@ -68,11 +70,11 @@ def load_vm_image_catalog(settings: Settings) -> VmImageCatalog:
 
         image_url = str(raw.get("url", "")).strip()
         parsed = urlparse(image_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if parsed.scheme not in _SUPPORTED_IMAGE_URL_SCHEMES or not parsed.netloc:
             raise ValueError(f"invalid image url for {image_id}")
 
         image_format = str(raw.get("format", "qcow2")).strip().lower() or "qcow2"
-        if image_format != "qcow2":
+        if image_format not in _SUPPORTED_IMAGE_FORMATS:
             raise ValueError(f"unsupported image format for {image_id}: {image_format}")
 
         sha256_value = str(raw.get("sha256", "")).strip().lower() or None

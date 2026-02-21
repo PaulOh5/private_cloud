@@ -6,17 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.adapters.postgres import (
-    PostgresCommandOutboxRepository,
-    PostgresInstanceReadRepository,
-    PostgresInstanceRepository,
-    PostgresTaskRepository,
-)
-from app.adapters.rabbitmq_image_sync_rpc import VmImageSyncRpcError
-from app.adapters.resource_accounting import HostResourceAccountingAdapter, TenantQuotaAccountingAdapter
 from app.api.audit import write_audit_log
 from app.api.dependencies import (
     advisory_lock,
+    build_vm_mutation_deps,
+    build_vm_query_deps,
     ensure_instance_access,
     ensure_mutation_allowed_for_user_tenant,
     ensure_task_access,
@@ -54,6 +48,7 @@ from app.application.queries.list_tasks import ListTasksHandler, ListTasksQuery
 from app.config import Settings
 from app.domain.auth import User
 from app.domain.errors import DomainError
+from app.ports import VmImageSyncError
 
 instance_router = APIRouter(prefix="/instances", tags=["instances"])
 task_router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -138,7 +133,7 @@ def list_images(
 def _sync_images_impl(request: Request) -> SyncVmImagesResponse:
     try:
         result = request.app.state.vm_image_sync_port.sync_images()
-    except VmImageSyncRpcError as exc:
+    except VmImageSyncError as exc:
         status_code = 502
         if exc.code == "VALIDATION_ERROR":
             status_code = 400
@@ -173,19 +168,17 @@ def create_instance(
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
+    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
     ensure_mutation_allowed_for_user_tenant(session, current_user)
     tenant_id = resolve_tenant_for_create(current_user, body.tenant_id)
     advisory_lock(session)
     handler = CreateInstanceHandler(
-        write_repository=PostgresInstanceRepository(session),
-        task_repository=PostgresTaskRepository(session),
-        outbox_repository=PostgresCommandOutboxRepository(
-            session,
-            notify_channel=settings.outbox_notify_channel,
-        ),
+        write_repository=deps.write_repository,
+        task_repository=deps.task_repository,
+        outbox_repository=deps.outbox_repository,
         outbox_max_attempts=settings.outbox_max_attempts,
-        accounting=HostResourceAccountingAdapter(session),
-        quota_accounting=TenantQuotaAccountingAdapter(session),
+        accounting=deps.accounting,
+        quota_accounting=deps.quota_accounting,
     )
     accepted = handler.handle(
         CreateInstanceCommand(
@@ -227,22 +220,20 @@ def update_instance(
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
+    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
     ensure_mutation_allowed_for_user_tenant(session, current_user)
-    existing = PostgresInstanceReadRepository(session).get(instance_id)
+    existing = deps.read_repository.get(instance_id)
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
     ensure_instance_access(current_user, existing.tenant_id)
     advisory_lock(session)
     handler = UpdateInstanceHandler(
-        write_repository=PostgresInstanceRepository(session),
-        task_repository=PostgresTaskRepository(session),
-        outbox_repository=PostgresCommandOutboxRepository(
-            session,
-            notify_channel=settings.outbox_notify_channel,
-        ),
+        write_repository=deps.write_repository,
+        task_repository=deps.task_repository,
+        outbox_repository=deps.outbox_repository,
         outbox_max_attempts=settings.outbox_max_attempts,
-        accounting=HostResourceAccountingAdapter(session),
-        quota_accounting=TenantQuotaAccountingAdapter(session),
+        accounting=deps.accounting,
+        quota_accounting=deps.quota_accounting,
     )
     accepted = handler.handle(
         UpdateInstanceCommand(
@@ -280,20 +271,19 @@ def delete_instance(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
+    settings: Settings = request.app.state.settings
+    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
     ensure_mutation_allowed_for_user_tenant(session, current_user)
-    existing = PostgresInstanceReadRepository(session).get(instance_id)
+    existing = deps.read_repository.get(instance_id)
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
     ensure_instance_access(current_user, existing.tenant_id)
     advisory_lock(session)
     handler = DeleteInstanceHandler(
-        write_repository=PostgresInstanceRepository(session),
-        task_repository=PostgresTaskRepository(session),
-        outbox_repository=PostgresCommandOutboxRepository(
-            session,
-            notify_channel=request.app.state.settings.outbox_notify_channel,
-        ),
-        outbox_max_attempts=request.app.state.settings.outbox_max_attempts,
+        write_repository=deps.write_repository,
+        task_repository=deps.task_repository,
+        outbox_repository=deps.outbox_repository,
+        outbox_max_attempts=settings.outbox_max_attempts,
     )
     accepted = handler.handle(DeleteInstanceCommand(instance_id=instance_id))
     write_audit_log(
@@ -323,20 +313,19 @@ def stop_instance(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
+    settings: Settings = request.app.state.settings
+    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
     ensure_mutation_allowed_for_user_tenant(session, current_user)
-    existing = PostgresInstanceReadRepository(session).get(instance_id)
+    existing = deps.read_repository.get(instance_id)
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
     ensure_instance_access(current_user, existing.tenant_id)
     advisory_lock(session)
     handler = StopInstanceHandler(
-        write_repository=PostgresInstanceRepository(session),
-        task_repository=PostgresTaskRepository(session),
-        outbox_repository=PostgresCommandOutboxRepository(
-            session,
-            notify_channel=request.app.state.settings.outbox_notify_channel,
-        ),
-        outbox_max_attempts=request.app.state.settings.outbox_max_attempts,
+        write_repository=deps.write_repository,
+        task_repository=deps.task_repository,
+        outbox_repository=deps.outbox_repository,
+        outbox_max_attempts=settings.outbox_max_attempts,
     )
     accepted = handler.handle(StopInstanceCommand(instance_id=instance_id))
     write_audit_log(
@@ -367,22 +356,20 @@ def start_instance(
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
+    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
     ensure_mutation_allowed_for_user_tenant(session, current_user)
-    existing = PostgresInstanceReadRepository(session).get(instance_id)
+    existing = deps.read_repository.get(instance_id)
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
     ensure_instance_access(current_user, existing.tenant_id)
     advisory_lock(session)
     handler = StartInstanceHandler(
-        write_repository=PostgresInstanceRepository(session),
-        task_repository=PostgresTaskRepository(session),
-        outbox_repository=PostgresCommandOutboxRepository(
-            session,
-            notify_channel=settings.outbox_notify_channel,
-        ),
+        write_repository=deps.write_repository,
+        task_repository=deps.task_repository,
+        outbox_repository=deps.outbox_repository,
         outbox_max_attempts=settings.outbox_max_attempts,
-        accounting=HostResourceAccountingAdapter(session),
-        quota_accounting=TenantQuotaAccountingAdapter(session),
+        accounting=deps.accounting,
+        quota_accounting=deps.quota_accounting,
     )
     accepted = handler.handle(StartInstanceCommand(instance_id=instance_id, host_node=settings.host_node))
     write_audit_log(
@@ -415,8 +402,9 @@ def list_instances(
     tenant_id: UUID | None = Query(default=None),
     current_user: User = Depends(require_roles("viewer", "operator", "admin")),
 ):
+    deps = build_vm_query_deps(session)
     effective_tenant_id = resolve_tenant_scope_for_list(current_user, tenant_id)
-    handler = ListInstancesHandler(read_repository=PostgresInstanceReadRepository(session))
+    handler = ListInstancesHandler(read_repository=deps.read_repository)
     result = handler.handle(
         ListInstancesQuery(
             limit=limit,
@@ -440,7 +428,8 @@ def get_instance(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("viewer", "operator", "admin")),
 ):
-    handler = GetInstanceHandler(read_repository=PostgresInstanceReadRepository(session))
+    deps = build_vm_query_deps(session)
+    handler = GetInstanceHandler(read_repository=deps.read_repository)
     instance = handler.handle(instance_id)
     ensure_instance_access(current_user, instance.tenant_id)
     return to_instance_response(instance)
@@ -453,7 +442,8 @@ def issue_console_ticket(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
-    handler = GetInstanceHandler(read_repository=PostgresInstanceReadRepository(session))
+    deps = build_vm_query_deps(session)
+    handler = GetInstanceHandler(read_repository=deps.read_repository)
     instance = handler.handle(instance_id)
     ensure_instance_access(current_user, instance.tenant_id)
     if instance.status != "running":
@@ -592,8 +582,9 @@ def list_tasks(
     tenant_id: UUID | None = Query(default=None),
     current_user: User = Depends(require_roles("viewer", "operator", "admin")),
 ):
+    deps = build_vm_query_deps(session)
     effective_tenant_id = resolve_tenant_scope_for_list(current_user, tenant_id)
-    handler = ListTasksHandler(task_repository=PostgresTaskRepository(session))
+    handler = ListTasksHandler(task_repository=deps.task_repository)
     result = handler.handle(
         ListTasksQuery(
             limit=limit,
@@ -618,11 +609,12 @@ def get_task(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("viewer", "operator", "admin")),
 ):
+    deps = build_vm_query_deps(session)
     task_tenant_id = _get_task_tenant_id(session, task_id)
     if task_tenant_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
     ensure_task_access(current_user, task_tenant_id)
-    handler = GetTaskHandler(task_repository=PostgresTaskRepository(session))
+    handler = GetTaskHandler(task_repository=deps.task_repository)
     return to_task_response(handler.handle(task_id))
 
 
@@ -633,6 +625,8 @@ def retry_task(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
+    settings: Settings = request.app.state.settings
+    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
     ensure_mutation_allowed_for_user_tenant(session, current_user)
     task_tenant_id = _get_task_tenant_id(session, task_id)
     if task_tenant_id is None:
@@ -640,15 +634,12 @@ def retry_task(
     ensure_task_access(current_user, task_tenant_id)
     advisory_lock(session)
     handler = RetryTaskHandler(
-        write_repository=PostgresInstanceRepository(session),
-        task_repository=PostgresTaskRepository(session),
-        outbox_repository=PostgresCommandOutboxRepository(
-            session,
-            notify_channel=request.app.state.settings.outbox_notify_channel,
-        ),
-        outbox_max_attempts=request.app.state.settings.outbox_max_attempts,
-        accounting=HostResourceAccountingAdapter(session),
-        quota_accounting=TenantQuotaAccountingAdapter(session),
+        write_repository=deps.write_repository,
+        task_repository=deps.task_repository,
+        outbox_repository=deps.outbox_repository,
+        outbox_max_attempts=settings.outbox_max_attempts,
+        accounting=deps.accounting,
+        quota_accounting=deps.quota_accounting,
     )
     accepted = handler.handle(RetryTaskCommand(task_id=task_id))
     write_audit_log(
@@ -683,6 +674,8 @@ def cancel_task(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
+    settings: Settings = request.app.state.settings
+    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
     ensure_mutation_allowed_for_user_tenant(session, current_user)
     task_tenant_id = _get_task_tenant_id(session, task_id)
     if task_tenant_id is None:
@@ -690,13 +683,10 @@ def cancel_task(
     ensure_task_access(current_user, task_tenant_id)
     advisory_lock(session)
     handler = CancelTaskHandler(
-        write_repository=PostgresInstanceRepository(session),
-        task_repository=PostgresTaskRepository(session),
-        outbox_repository=PostgresCommandOutboxRepository(
-            session,
-            notify_channel=request.app.state.settings.outbox_notify_channel,
-        ),
-        outbox_max_attempts=request.app.state.settings.outbox_max_attempts,
+        write_repository=deps.write_repository,
+        task_repository=deps.task_repository,
+        outbox_repository=deps.outbox_repository,
+        outbox_max_attempts=settings.outbox_max_attempts,
     )
     try:
         accepted = handler.handle(

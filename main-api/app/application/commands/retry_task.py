@@ -8,7 +8,7 @@ from app.application.commands.common import TaskAccepted
 from app.application.services.task_instance_state import apply_pending_instance_state
 from app.domain.errors import ConflictError, NotFoundError, ValidationError
 from app.domain.models import ResourceSpec
-from app.ports.interfaces import (
+from app.ports import (
     CapacityCheckInput,
     CommandOutboxRepository,
     InstanceRepository,

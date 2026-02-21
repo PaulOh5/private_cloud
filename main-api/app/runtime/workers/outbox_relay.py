@@ -10,9 +10,9 @@ from uuid import uuid4
 import psycopg
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.adapters.postgres import PostgresCommandOutboxRepository
+from app.adapters.postgres_repositories import PostgresCommandOutboxRepository
 from app.domain.models import OutboxMessage
-from app.ports.interfaces import VmProvisioningPort
+from app.ports import VmProvisioningPort
 
 logger = logging.getLogger(__name__)
 _CHANNEL_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -45,19 +45,25 @@ class OutboxRelay:
         self.locker_id = f"{socket.gethostname()}:{uuid4()}"
 
         self._stop_event = threading.Event()
+        self._ready_event = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self._stop_event.clear()
+        self._ready_event.clear()
         self._thread = threading.Thread(target=self._run, name="outbox-relay", daemon=True)
         self._thread.start()
+
+    def wait_until_ready(self, timeout: float = 10.0) -> bool:
+        return self._ready_event.wait(timeout=timeout)
 
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=5)
+        self._ready_event.clear()
 
     def _open_listener(self):
         conn = psycopg.connect(self.postgres_listener_dsn, autocommit=True)
@@ -75,6 +81,7 @@ class OutboxRelay:
             raise
 
     def _run(self) -> None:
+        self._ready_event.set()
         listener = None
         while not self._stop_event.is_set():
             try:

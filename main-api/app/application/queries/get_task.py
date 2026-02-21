@@ -2,7 +2,7 @@ from uuid import UUID
 
 from app.domain.errors import NotFoundError
 from app.domain.models import InstanceTask
-from app.ports.interfaces import TaskRepository
+from app.ports import TaskRepository
 
 
 class GetTaskHandler:

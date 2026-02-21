@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.adapters.postgres import PostgresAuditLogRepository
+from app.adapters.postgres_repositories import PostgresAuditLogRepository
 from app.api.dependencies import get_session, require_roles
 from app.api.schemas import AuditLogResponse, ListAuditLogsResponse
 from app.domain.auth import User

@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from app.application.commands.common import TaskAccepted
 from app.application.services.task_instance_state import revert_instance_state_on_terminal_failure
 from app.domain.errors import ConflictError, NotFoundError
-from app.ports.interfaces import CommandOutboxRepository, InstanceRepository, TaskRepository
+from app.ports import CommandOutboxRepository, InstanceRepository, TaskRepository
 
 
 @dataclass(frozen=True)

@@ -2,7 +2,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.domain.errors import CapacityExceededError, QuotaExceededError, TenantInactiveError
-from app.ports.interfaces import CapacityCheckInput, TenantQuotaCheckInput
+from app.ports import CapacityCheckInput, TenantQuotaCheckInput
 
 
 def _profile_factors(profile: str) -> tuple[int, int, int, int]:
