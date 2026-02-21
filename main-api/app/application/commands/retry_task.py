@@ -10,12 +10,12 @@ from app.domain.errors import ConflictError, NotFoundError, ValidationError
 from app.domain.models import ResourceSpec
 from app.ports.interfaces import (
     CapacityCheckInput,
+    CommandOutboxRepository,
     InstanceRepository,
     ResourceAccountingPort,
     TaskRepository,
     TenantQuotaAccountingPort,
     TenantQuotaCheckInput,
-    VmProvisioningPort,
 )
 
 
@@ -29,13 +29,15 @@ class RetryTaskHandler:
         self,
         write_repository: InstanceRepository,
         task_repository: TaskRepository,
-        provisioning: VmProvisioningPort,
+        outbox_repository: CommandOutboxRepository,
         accounting: ResourceAccountingPort,
         quota_accounting: TenantQuotaAccountingPort | None = None,
+        outbox_max_attempts: int = 20,
     ):
         self.write_repository = write_repository
         self.task_repository = task_repository
-        self.provisioning = provisioning
+        self.outbox_repository = outbox_repository
+        self.outbox_max_attempts = max(1, int(outbox_max_attempts))
         self.accounting = accounting
         self.quota_accounting = quota_accounting
 
@@ -97,8 +99,8 @@ class RetryTaskHandler:
             created_at=now,
         )
 
-        self.provisioning.publish_command(
-            command=f"instance.{source_task.command}",
+        self.outbox_repository.enqueue_command(
+            topic=f"instance.{source_task.command}",
             payload=self._command_payload(
                 command=source_task.command,
                 instance_id=instance.id,
@@ -107,6 +109,7 @@ class RetryTaskHandler:
             ),
             task_id=cloned.id,
             request_id=new_request_id,
+            max_attempts=self.outbox_max_attempts,
         )
 
         return TaskAccepted(

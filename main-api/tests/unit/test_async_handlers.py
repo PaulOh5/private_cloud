@@ -49,7 +49,7 @@ def test_create_handler_queues_task_and_publishes(
     handler = CreateInstanceHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
         accounting=dummy_capacity,
     )
 
@@ -83,7 +83,7 @@ def test_create_handler_forwards_optional_image_id(
     handler = CreateInstanceHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
         accounting=dummy_capacity,
     )
 
@@ -151,7 +151,7 @@ def test_update_handler_rejects_when_active_task_exists(
     handler = UpdateInstanceHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
         accounting=dummy_capacity,
     )
 
@@ -193,7 +193,7 @@ def test_delete_handler_marks_pending_and_publishes(
     handler = DeleteInstanceHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
     )
 
     accepted = handler.handle(DeleteInstanceCommand(instance_id=instance_id))
@@ -261,7 +261,7 @@ def test_retry_handler_from_failed_creates_new_task_and_publishes(
     handler = RetryTaskHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
         accounting=dummy_capacity,
     )
     accepted = handler.handle(RetryTaskCommand(task_id=failed_task_id))
@@ -343,7 +343,7 @@ def test_retry_handler_blocked_when_active_task_exists(
     handler = RetryTaskHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
         accounting=dummy_capacity,
     )
     with pytest.raises(ConflictError):
@@ -376,7 +376,7 @@ def test_update_handler_on_stopped_sets_boot_after_update_false(
     handler = UpdateInstanceHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
         accounting=dummy_capacity,
     )
     accepted = handler.handle(
@@ -421,7 +421,7 @@ def test_start_handler_stopped_performs_quota_capacity_checks_and_publishes(
     handler = StartInstanceHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
         accounting=capacity,
         quota_accounting=quota,
     )
@@ -461,7 +461,7 @@ def test_start_handler_quota_exceeded_raises(
     handler = StartInstanceHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
         accounting=dummy_capacity,
         quota_accounting=FailingQuota(),
     )
@@ -494,7 +494,7 @@ def test_start_handler_capacity_exceeded_raises(
     handler = StartInstanceHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
         accounting=FailingCapacity(),
         quota_accounting=None,
     )
@@ -527,7 +527,7 @@ def test_stop_handler_running_marks_pending_and_publishes(
     handler = StopInstanceHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
     )
     accepted = handler.handle(StopInstanceCommand(instance_id=instance_id))
 
@@ -584,7 +584,7 @@ def test_cancel_handler_queued_marks_canceled(
     handler = CancelTaskHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
     )
     accepted = handler.handle(CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="user requested"))
 
@@ -641,7 +641,7 @@ def test_cancel_handler_running_sets_cancel_pending_and_publishes(
     handler = CancelTaskHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
     )
     accepted = handler.handle(CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="stop"))
 
@@ -698,7 +698,7 @@ def test_cancel_handler_running_start_task_is_supported(
     handler = CancelTaskHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
     )
     accepted = handler.handle(CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="stop request"))
     assert accepted.status == "cancel_pending"
@@ -752,7 +752,7 @@ def test_cancel_handler_duplicate_cancel_is_idempotent(
     handler = CancelTaskHandler(
         write_repository=in_memory_instance_repo,
         task_repository=in_memory_task_repo,
-        provisioning=dummy_provisioning,
+        outbox_repository=dummy_provisioning,
     )
     accepted = handler.handle(CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="repeat"))
 

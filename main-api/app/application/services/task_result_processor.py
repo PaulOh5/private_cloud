@@ -13,6 +13,10 @@ class RetryableResultEventError(Exception):
     pass
 
 
+class NonRetryableResultEventError(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class VmResultEvent:
     task_id: UUID
@@ -33,6 +37,9 @@ class TaskResultProcessor:
         self.task_repo = task_repo
 
     def process(self, event: VmResultEvent) -> None:
+        if event.status not in {"running", "succeeded", "failed", "canceled"}:
+            raise NonRetryableResultEventError(f"unsupported task result status: {event.status}")
+
         task = self.task_repo.get_for_update(event.task_id)
         if not task:
             now = datetime.now(timezone.utc)

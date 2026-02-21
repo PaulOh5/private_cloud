@@ -7,13 +7,13 @@ from uuid import UUID, uuid4
 from app.application.commands.common import TaskAccepted
 from app.domain.models import Instance, InstanceTask, ResourceSpec
 from app.ports.interfaces import (
+    CommandOutboxRepository,
     CapacityCheckInput,
     InstanceRepository,
     ResourceAccountingPort,
     TaskRepository,
     TenantQuotaAccountingPort,
     TenantQuotaCheckInput,
-    VmProvisioningPort,
 )
 
 
@@ -33,13 +33,15 @@ class CreateInstanceHandler:
         self,
         write_repository: InstanceRepository,
         task_repository: TaskRepository,
-        provisioning: VmProvisioningPort,
+        outbox_repository: CommandOutboxRepository,
         accounting: ResourceAccountingPort,
         quota_accounting: TenantQuotaAccountingPort | None = None,
+        outbox_max_attempts: int = 20,
     ):
         self.write_repository = write_repository
         self.task_repository = task_repository
-        self.provisioning = provisioning
+        self.outbox_repository = outbox_repository
+        self.outbox_max_attempts = max(1, int(outbox_max_attempts))
         self.accounting = accounting
         self.quota_accounting = quota_accounting
 
@@ -116,8 +118,8 @@ class CreateInstanceHandler:
         )
         self.task_repository.create_task(task)
 
-        self.provisioning.publish_command(
-            command="instance.create",
+        self.outbox_repository.enqueue_command(
+            topic="instance.create",
             payload={
                 "instance_id": str(instance_id),
                 "name": command.name,
@@ -129,6 +131,7 @@ class CreateInstanceHandler:
             },
             task_id=task_id,
             request_id=request_id,
+            max_attempts=self.outbox_max_attempts,
         )
 
         return TaskAccepted(

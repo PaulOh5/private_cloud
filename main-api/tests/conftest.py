@@ -206,14 +206,33 @@ class DummyProvisioning:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def publish_command(self, command: str, payload: dict, task_id: UUID, request_id: UUID) -> None:
+    def enqueue_command(
+        self,
+        *,
+        topic: str,
+        payload: dict,
+        task_id: UUID,
+        request_id: UUID,
+        max_attempts: int,
+    ):
         self.calls.append(
             {
-                "command": command,
+                "command": topic,
+                "topic": topic,
                 "payload": payload,
                 "task_id": task_id,
                 "request_id": request_id,
+                "max_attempts": max_attempts,
             }
+        )
+
+    def publish_command(self, command: str, payload: dict, task_id: UUID, request_id: UUID) -> None:
+        self.enqueue_command(
+            topic=command,
+            payload=payload,
+            task_id=task_id,
+            request_id=request_id,
+            max_attempts=20,
         )
 
 

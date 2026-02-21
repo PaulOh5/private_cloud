@@ -185,6 +185,31 @@ END $$;
 CREATE INDEX IF NOT EXISTS instance_tasks_instance_id_idx ON instance_tasks (instance_id);
 CREATE INDEX IF NOT EXISTS instance_tasks_status_idx ON instance_tasks (status);
 
+CREATE TABLE IF NOT EXISTS command_outbox (
+    id UUID PRIMARY KEY,
+    topic TEXT NOT NULL,
+    task_id UUID NOT NULL,
+    request_id UUID NOT NULL,
+    payload JSONB NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'publishing', 'sent', 'failed')),
+    attempt_count INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 20,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    locked_by TEXT NULL,
+    lock_expires_at TIMESTAMPTZ NULL,
+    last_error TEXT NULL,
+    sent_at TIMESTAMPTZ NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS command_outbox_task_topic_request_idx
+    ON command_outbox (task_id, topic, request_id);
+CREATE INDEX IF NOT EXISTS command_outbox_status_next_attempt_created_idx
+    ON command_outbox (status, next_attempt_at, created_at);
+CREATE INDEX IF NOT EXISTS command_outbox_task_id_idx ON command_outbox (task_id);
+CREATE INDEX IF NOT EXISTS command_outbox_request_id_idx ON command_outbox (request_id);
+
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,

@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from app.application.commands.common import TaskAccepted
 from app.domain.errors import ConflictError, NotFoundError, ValidationError
 from app.domain.models import InstanceTask
-from app.ports.interfaces import InstanceRepository, TaskRepository, VmProvisioningPort
+from app.ports.interfaces import CommandOutboxRepository, InstanceRepository, TaskRepository
 
 
 @dataclass(frozen=True)
@@ -20,11 +20,13 @@ class DeleteInstanceHandler:
         self,
         write_repository: InstanceRepository,
         task_repository: TaskRepository,
-        provisioning: VmProvisioningPort,
+        outbox_repository: CommandOutboxRepository,
+        outbox_max_attempts: int = 20,
     ):
         self.write_repository = write_repository
         self.task_repository = task_repository
-        self.provisioning = provisioning
+        self.outbox_repository = outbox_repository
+        self.outbox_max_attempts = max(1, int(outbox_max_attempts))
 
     def handle(self, command: DeleteInstanceCommand) -> TaskAccepted:
         instance = self.write_repository.get_for_update(command.instance_id)
@@ -76,14 +78,15 @@ class DeleteInstanceHandler:
         )
         self.task_repository.create_task(task)
 
-        self.provisioning.publish_command(
-            command="instance.delete",
+        self.outbox_repository.enqueue_command(
+            topic="instance.delete",
             payload={
                 "instance_id": str(command.instance_id),
                 "host_node": instance.host_node,
             },
             task_id=task_id,
             request_id=request_id,
+            max_attempts=self.outbox_max_attempts,
         )
 
         return TaskAccepted(

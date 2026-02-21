@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.adapters.postgres import PostgresInstanceReadRepository, PostgresInstanceRepository, PostgresTaskRepository
+from app.adapters.postgres import (
+    PostgresCommandOutboxRepository,
+    PostgresInstanceReadRepository,
+    PostgresInstanceRepository,
+    PostgresTaskRepository,
+)
 from app.adapters.rabbitmq_image_sync_rpc import VmImageSyncRpcError
 from app.adapters.resource_accounting import HostResourceAccountingAdapter, TenantQuotaAccountingAdapter
 from app.api.audit import write_audit_log
@@ -174,7 +179,11 @@ def create_instance(
     handler = CreateInstanceHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
-        provisioning=request.app.state.vm_port,
+        outbox_repository=PostgresCommandOutboxRepository(
+            session,
+            notify_channel=settings.outbox_notify_channel,
+        ),
+        outbox_max_attempts=settings.outbox_max_attempts,
         accounting=HostResourceAccountingAdapter(session),
         quota_accounting=TenantQuotaAccountingAdapter(session),
     )
@@ -227,7 +236,11 @@ def update_instance(
     handler = UpdateInstanceHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
-        provisioning=request.app.state.vm_port,
+        outbox_repository=PostgresCommandOutboxRepository(
+            session,
+            notify_channel=settings.outbox_notify_channel,
+        ),
+        outbox_max_attempts=settings.outbox_max_attempts,
         accounting=HostResourceAccountingAdapter(session),
         quota_accounting=TenantQuotaAccountingAdapter(session),
     )
@@ -276,7 +289,11 @@ def delete_instance(
     handler = DeleteInstanceHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
-        provisioning=request.app.state.vm_port,
+        outbox_repository=PostgresCommandOutboxRepository(
+            session,
+            notify_channel=request.app.state.settings.outbox_notify_channel,
+        ),
+        outbox_max_attempts=request.app.state.settings.outbox_max_attempts,
     )
     accepted = handler.handle(DeleteInstanceCommand(instance_id=instance_id))
     write_audit_log(
@@ -315,7 +332,11 @@ def stop_instance(
     handler = StopInstanceHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
-        provisioning=request.app.state.vm_port,
+        outbox_repository=PostgresCommandOutboxRepository(
+            session,
+            notify_channel=request.app.state.settings.outbox_notify_channel,
+        ),
+        outbox_max_attempts=request.app.state.settings.outbox_max_attempts,
     )
     accepted = handler.handle(StopInstanceCommand(instance_id=instance_id))
     write_audit_log(
@@ -355,7 +376,11 @@ def start_instance(
     handler = StartInstanceHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
-        provisioning=request.app.state.vm_port,
+        outbox_repository=PostgresCommandOutboxRepository(
+            session,
+            notify_channel=settings.outbox_notify_channel,
+        ),
+        outbox_max_attempts=settings.outbox_max_attempts,
         accounting=HostResourceAccountingAdapter(session),
         quota_accounting=TenantQuotaAccountingAdapter(session),
     )
@@ -617,7 +642,11 @@ def retry_task(
     handler = RetryTaskHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
-        provisioning=request.app.state.vm_port,
+        outbox_repository=PostgresCommandOutboxRepository(
+            session,
+            notify_channel=request.app.state.settings.outbox_notify_channel,
+        ),
+        outbox_max_attempts=request.app.state.settings.outbox_max_attempts,
         accounting=HostResourceAccountingAdapter(session),
         quota_accounting=TenantQuotaAccountingAdapter(session),
     )
@@ -663,7 +692,11 @@ def cancel_task(
     handler = CancelTaskHandler(
         write_repository=PostgresInstanceRepository(session),
         task_repository=PostgresTaskRepository(session),
-        provisioning=request.app.state.vm_port,
+        outbox_repository=PostgresCommandOutboxRepository(
+            session,
+            notify_channel=request.app.state.settings.outbox_notify_channel,
+        ),
+        outbox_max_attempts=request.app.state.settings.outbox_max_attempts,
     )
     try:
         accepted = handler.handle(

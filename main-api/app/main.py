@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.adapters.postgres import PostgresTenantQuotaRepository, PostgresUserRepository
 from app.adapters.rabbitmq_image_sync_rpc import RabbitMqVmImageSyncRpcAdapter
+from app.adapters.outbox_relay import OutboxRelay
 from app.adapters.rabbitmq_result_consumer import RabbitMqVmResultConsumer
 from app.adapters.rabbitmq_rpc import RabbitMqVmProvisioningAdapter
 from app.adapters.console_ticket_store import ConsoleTicketStore
@@ -56,14 +57,21 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.result_consumer.start()
-        if app.state.stale_task_monitor is not None:
-            app.state.stale_task_monitor.start()
         try:
+            app.state.result_consumer.start()
+            if app.state.outbox_relay is not None:
+                ready = app.state.result_consumer.wait_until_ready(timeout=10.0)
+                if not ready:
+                    raise RuntimeError("vm result consumer was not ready before outbox relay startup")
+                app.state.outbox_relay.start()
+            if app.state.stale_task_monitor is not None:
+                app.state.stale_task_monitor.start()
             yield
         finally:
             if app.state.stale_task_monitor is not None:
                 app.state.stale_task_monitor.stop()
+            if app.state.outbox_relay is not None:
+                app.state.outbox_relay.stop()
             app.state.result_consumer.stop()
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -160,7 +168,8 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory
-    app.state.vm_port = RabbitMqVmProvisioningAdapter(settings.rabbitmq_dsn)
+    app.state.vm_publisher = RabbitMqVmProvisioningAdapter(settings.rabbitmq_dsn)
+    app.state.vm_port = app.state.vm_publisher
     app.state.vm_image_sync_port = RabbitMqVmImageSyncRpcAdapter(
         settings.rabbitmq_dsn,
         settings.vm_command_timeout_seconds,
@@ -176,6 +185,19 @@ def create_app() -> FastAPI:
         )
     else:
         app.state.stale_task_monitor = None
+    if settings.outbox_relay_enabled:
+        app.state.outbox_relay = OutboxRelay(
+            session_factory=session_factory,
+            provisioning=app.state.vm_publisher,
+            postgres_listener_dsn=settings.postgres_listener_dsn,
+            notify_channel=settings.outbox_notify_channel,
+            poll_interval_seconds=settings.outbox_poll_interval_seconds,
+            batch_size=settings.outbox_batch_size,
+            lock_timeout_seconds=settings.outbox_lock_timeout_seconds,
+            retry_max_seconds=settings.outbox_retry_max_seconds,
+        )
+    else:
+        app.state.outbox_relay = None
 
     app.include_router(auth_router)
     app.include_router(audit_router)
