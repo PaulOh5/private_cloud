@@ -8,16 +8,16 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.adapters.postgres import (
+from app.adapters.postgres_repositories import (
     PostgresCommandOutboxRepository,
     PostgresInstanceRepository,
     PostgresRefreshTokenRepository,
     PostgresTaskRepository,
     PostgresUserRepository,
 )
-from app.adapters.outbox_relay import OutboxRelay
+from app.runtime.workers.outbox_relay import OutboxRelay
 from app.adapters.resource_accounting import HostResourceAccountingAdapter
-from app.adapters.stale_task_monitor import StaleTaskMonitor
+from app.runtime.workers.stale_task_monitor import StaleTaskMonitor
 from app.application.commands.create_instance import CreateInstanceCommand, CreateInstanceHandler
 from app.application.commands.update_instance import UpdateInstanceCommand, UpdateInstanceHandler
 from app.domain.errors import ConflictError

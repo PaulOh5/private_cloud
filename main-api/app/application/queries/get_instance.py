@@ -2,7 +2,7 @@ from uuid import UUID
 
 from app.domain.errors import NotFoundError
 from app.domain.models import Instance
-from app.ports.interfaces import InstanceReadRepository
+from app.ports import InstanceReadRepository
 
 
 class GetInstanceHandler:

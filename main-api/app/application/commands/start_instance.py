@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from app.application.commands.common import TaskAccepted
 from app.domain.errors import ConflictError, NotFoundError, ValidationError
 from app.domain.models import InstanceTask
-from app.ports.interfaces import (
+from app.ports import (
     CapacityCheckInput,
     CommandOutboxRepository,
     InstanceRepository,

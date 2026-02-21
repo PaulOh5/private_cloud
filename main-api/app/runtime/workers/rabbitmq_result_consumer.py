@@ -11,7 +11,7 @@ import pika
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.adapters.postgres import PostgresInstanceRepository, PostgresTaskRepository
+from app.adapters.postgres_repositories import PostgresInstanceRepository, PostgresTaskRepository
 from app.application.services.task_result_processor import (
     NonRetryableResultEventError,
     RetryableResultEventError,

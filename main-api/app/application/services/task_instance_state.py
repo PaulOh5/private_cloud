@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from app.domain.models import Instance, ResourceSpec, TaskCommand
-from app.ports.interfaces import InstanceRepository
+from app.ports import InstanceRepository
 
 
 def apply_pending_instance_state(

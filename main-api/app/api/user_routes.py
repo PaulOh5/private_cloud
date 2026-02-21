@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.adapters.postgres import PostgresRefreshTokenRepository, PostgresUserRepository
+from app.adapters.postgres_repositories import PostgresRefreshTokenRepository, PostgresUserRepository
 from app.api.audit import write_audit_log
 from app.api.dependencies import get_current_user, get_session, require_roles
 from app.api.schemas import (

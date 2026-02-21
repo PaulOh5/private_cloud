@@ -6,7 +6,7 @@ from uuid import UUID
 
 from app.application.services.task_instance_state import revert_instance_state_on_terminal_failure
 from app.domain.errors import NotFoundError
-from app.ports.interfaces import InstanceRepository, TaskRepository
+from app.ports import InstanceRepository, TaskRepository
 
 
 class RetryableResultEventError(Exception):

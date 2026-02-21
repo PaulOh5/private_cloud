@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-import app.adapters.rabbitmq_result_consumer as consumer_module
+import app.runtime.workers.rabbitmq_result_consumer as consumer_module
 from app.application.services.task_result_processor import RetryableResultEventError
 
 

@@ -66,7 +66,7 @@ def api_client(pg_container, monkeypatch):
     monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "admin1234")
     monkeypatch.setenv("OUTBOX_RELAY_ENABLED", "false")
 
-    import app.adapters.rabbitmq_result_consumer as result_module
+    import app.runtime.workers.rabbitmq_result_consumer as result_module
     import app.adapters.rabbitmq_rpc as rpc_module
     import app.adapters.rabbitmq_image_sync_rpc as image_sync_module
 

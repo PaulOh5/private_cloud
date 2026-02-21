@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.adapters.postgres import PostgresInstanceRepository, PostgresTaskRepository
+from app.adapters.postgres_repositories import PostgresInstanceRepository, PostgresTaskRepository
 from app.application.services.task_instance_state import revert_instance_state_on_terminal_failure
 
 logger = logging.getLogger(__name__)
@@ -25,20 +25,28 @@ class StaleTaskMonitor:
         self.queued_timeout_seconds = max(1, int(queued_timeout_seconds))
         self.sweep_interval_seconds = max(1, int(sweep_interval_seconds))
         self._stop_event = threading.Event()
+        self._ready_event = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._stop_event.clear()
+        self._ready_event.clear()
         self._thread = threading.Thread(target=self._run, name="stale-task-monitor", daemon=True)
         self._thread.start()
+
+    def wait_until_ready(self, timeout: float = 10.0) -> bool:
+        return self._ready_event.wait(timeout=timeout)
 
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=5)
+        self._ready_event.clear()
 
     def _run(self) -> None:
+        self._ready_event.set()
         while not self._stop_event.is_set():
             try:
                 recovered = self._sweep_once()

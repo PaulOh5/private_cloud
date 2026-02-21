@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from app.adapters.postgres import PostgresAuditLogRepository
+from app.adapters.postgres_repositories import PostgresAuditLogRepository
 from app.domain.auth import User
 
 

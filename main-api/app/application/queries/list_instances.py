@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from app.domain.models import Instance
-from app.ports.interfaces import InstanceReadRepository
+from app.ports import InstanceReadRepository
 
 
 @dataclass(frozen=True)

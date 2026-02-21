@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.adapters.postgres import PostgresRefreshTokenRepository, PostgresTenantRepository, PostgresUserRepository
+from app.adapters.postgres_repositories import PostgresRefreshTokenRepository, PostgresTenantRepository, PostgresUserRepository
 from app.api.audit import write_audit_log
 from app.api.dependencies import get_current_user, get_session
 from app.api.schemas import AccessTokenResponse, CurrentUserResponse, LoginRequest, RefreshTokenRequest

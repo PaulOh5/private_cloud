@@ -6,58 +6,47 @@ from uuid import UUID
 
 import pika
 
-from app.ports.interfaces import VmProvisioningPort
+from app.infra.messaging.rabbitmq import (
+    COMMAND_EXCHANGE,
+    COMMAND_QUEUE,
+    DEAD_LETTER_EXCHANGE,
+    DEAD_LETTER_QUEUE,
+    open_blocking_connection,
+    setup_vm_command_topology,
+)
+from app.ports import VmProvisioningPort
 
 
 class RabbitMqVmProvisioningAdapter(VmProvisioningPort):
-    COMMAND_EXCHANGE = "vm.commands"
-    COMMAND_QUEUE = "vm.commands.q"
-    DEAD_LETTER_EXCHANGE = "vm.commands.dlx"
-    DEAD_LETTER_QUEUE = "vm.commands.dlq"
+    COMMAND_EXCHANGE = COMMAND_EXCHANGE
+    COMMAND_QUEUE = COMMAND_QUEUE
+    DEAD_LETTER_EXCHANGE = DEAD_LETTER_EXCHANGE
+    DEAD_LETTER_QUEUE = DEAD_LETTER_QUEUE
+    _ROUTING_KEYS = (
+        "instance.create",
+        "instance.update",
+        "instance.delete",
+        "instance.start",
+        "instance.stop",
+        "instance.cancel",
+        "image.sync",
+    )
 
     def __init__(self, amqp_url: str):
         self.amqp_url = amqp_url
         self._setup_topology()
 
     def _connection(self):
-        parameters = pika.URLParameters(self.amqp_url)
-        parameters.heartbeat = 30
-        parameters.blocked_connection_timeout = 30
-        return pika.BlockingConnection(parameters)
+        return open_blocking_connection(self.amqp_url)
 
     def _setup_topology(self) -> None:
         connection = self._connection()
         channel = connection.channel()
-
-        channel.exchange_declare(exchange=self.COMMAND_EXCHANGE, exchange_type="direct", durable=True)
-        channel.exchange_declare(exchange=self.DEAD_LETTER_EXCHANGE, exchange_type="direct", durable=True)
-
-        channel.queue_declare(
-            queue=self.COMMAND_QUEUE,
-            durable=True,
-            arguments={
-                "x-message-ttl": 120000,
-                "x-dead-letter-exchange": self.DEAD_LETTER_EXCHANGE,
-                "x-dead-letter-routing-key": "vm.commands.dlq",
-            },
-        )
-        channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.create")
-        channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.update")
-        channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.delete")
-        channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.start")
-        channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.stop")
-        channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="instance.cancel")
-        channel.queue_bind(queue=self.COMMAND_QUEUE, exchange=self.COMMAND_EXCHANGE, routing_key="image.sync")
-
-        channel.queue_declare(queue=self.DEAD_LETTER_QUEUE, durable=True)
-        channel.queue_bind(
-            queue=self.DEAD_LETTER_QUEUE,
-            exchange=self.DEAD_LETTER_EXCHANGE,
-            routing_key="vm.commands.dlq",
-        )
-
-        channel.close()
-        connection.close()
+        try:
+            setup_vm_command_topology(channel, routing_keys=self._ROUTING_KEYS)
+        finally:
+            channel.close()
+            connection.close()
 
     def publish_command(self, command: str, payload: dict, task_id: UUID, request_id: UUID) -> None:
         connection = self._connection()

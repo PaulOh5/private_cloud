@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from app.domain.models import InstanceTask, TaskCommand, TaskStatus
-from app.ports.interfaces import TaskRepository
+from app.ports import TaskRepository
 
 
 @dataclass(frozen=True)
