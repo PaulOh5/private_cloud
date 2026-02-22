@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 from app.adapters.postgres_repositories import PostgresAuditLogRepository
 from app.api.dependencies import get_session, require_roles
 from app.api.schemas import AuditLogResponse, ListAuditLogsResponse
+from app.application.queries.get_audit_log import GetAuditLogHandler
+from app.application.queries.list_audit_logs import ListAuditLogsHandler, ListAuditLogsQuery
 from app.domain.auth import User
-from app.domain.errors import NotFoundError
 
 audit_router = APIRouter(prefix="/audit-logs", tags=["audit-logs"])
 
@@ -43,19 +44,21 @@ def list_audit_logs(
     request_id: UUID | None = Query(default=None),
     tenant_id: UUID | None = Query(default=None),
 ):
-    repo = PostgresAuditLogRepository(session)
-    items, total = repo.list(
-        limit=limit,
-        offset=offset,
-        actor_user_id=actor_user_id,
-        action=action,
-        target_type=target_type,
-        request_id=request_id,
-        tenant_id=tenant_id,
+    use_cases = ListAuditLogsHandler(audit_log_repository=PostgresAuditLogRepository(session))
+    result = use_cases.handle(
+        ListAuditLogsQuery(
+            limit=limit,
+            offset=offset,
+            actor_user_id=actor_user_id,
+            action=action,
+            target_type=target_type,
+            request_id=request_id,
+            tenant_id=tenant_id,
+        )
     )
     return ListAuditLogsResponse(
-        items=[_to_response(item) for item in items],
-        total=total,
+        items=[_to_response(item) for item in result.items],
+        total=result.total,
         limit=limit,
         offset=offset,
     )
@@ -67,8 +70,5 @@ def get_audit_log(
     session: Session = Depends(get_session),
     _current_user: User = Depends(require_roles("admin")),
 ):
-    repo = PostgresAuditLogRepository(session)
-    log = repo.get(log_id)
-    if not log:
-        raise NotFoundError(f"audit log {log_id} not found")
-    return _to_response(log)
+    use_cases = GetAuditLogHandler(audit_log_repository=PostgresAuditLogRepository(session))
+    return _to_response(use_cases.handle(log_id))

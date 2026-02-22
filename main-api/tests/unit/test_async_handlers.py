@@ -3,13 +3,24 @@ from uuid import uuid4
 
 import pytest
 
-from app.application.commands.cancel_task import CancelTaskCommand, CancelTaskHandler
-from app.application.commands.create_instance import CreateInstanceCommand, CreateInstanceHandler
-from app.application.commands.delete_instance import DeleteInstanceCommand, DeleteInstanceHandler
-from app.application.commands.retry_task import RetryTaskCommand, RetryTaskHandler
-from app.application.commands.start_instance import StartInstanceCommand, StartInstanceHandler
-from app.application.commands.stop_instance import StopInstanceCommand, StopInstanceHandler
-from app.application.commands.update_instance import UpdateInstanceCommand, UpdateInstanceHandler
+from app.application.commands.instance_commands import (
+    CreateInstanceCommand,
+    CreateInstanceHandler,
+    DeleteInstanceCommand,
+    DeleteInstanceHandler,
+    StartInstanceCommand,
+    StartInstanceHandler,
+    StopInstanceCommand,
+    StopInstanceHandler,
+    UpdateInstanceCommand,
+    UpdateInstanceHandler,
+)
+from app.application.commands.task_commands import (
+    CancelTaskCommand,
+    CancelTaskHandler,
+    RetryTaskCommand,
+    RetryTaskHandler,
+)
 from app.domain.errors import CapacityExceededError, ConflictError, QuotaExceededError
 from app.domain.models import Instance, InstanceTask, ResourceSpec
 
