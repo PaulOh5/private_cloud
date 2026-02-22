@@ -1,163 +1,54 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.api.audit import write_audit_log
 from app.api.dependencies import (
-    advisory_lock,
     build_vm_mutation_deps,
     build_vm_query_deps,
     ensure_instance_access,
     ensure_mutation_allowed_for_user_tenant,
-    ensure_task_access,
     get_session,
+    get_uow,
     require_roles,
     resolve_tenant_for_create,
     resolve_tenant_scope_for_list,
 )
+from app.api.routers.common import to_instance_response
 from app.api.schemas import (
-    CancelTaskRequest,
     ConsoleTicketResponse,
     CreateInstanceRequest,
     InstanceResponse,
     InstanceTaskAcceptedResponse,
-    SyncVmImagesResponse,
-    ListVmImagesResponse,
     ListInstancesResponse,
-    ListTasksResponse,
-    TaskResponse,
     UpdateInstanceRequest,
-    VmImageResponse,
 )
-from app.application.commands.create_instance import CreateInstanceCommand, CreateInstanceHandler
-from app.application.commands.cancel_task import CancelTaskCommand, CancelTaskHandler
-from app.application.commands.delete_instance import DeleteInstanceCommand, DeleteInstanceHandler
-from app.application.commands.retry_task import RetryTaskCommand, RetryTaskHandler
-from app.application.commands.start_instance import StartInstanceCommand, StartInstanceHandler
-from app.application.commands.stop_instance import StopInstanceCommand, StopInstanceHandler
-from app.application.commands.update_instance import UpdateInstanceCommand, UpdateInstanceHandler
-from app.application.services.console_port import compute_console_vnc_port
+from app.application.commands.instance_commands import (
+    CreateInstanceCommand,
+    CreateInstanceHandler,
+    DeleteInstanceCommand,
+    DeleteInstanceHandler,
+    StartInstanceCommand,
+    StartInstanceHandler,
+    StopInstanceCommand,
+    StopInstanceHandler,
+    UpdateInstanceCommand,
+    UpdateInstanceHandler,
+)
 from app.application.queries.get_instance import GetInstanceHandler
-from app.application.queries.get_task import GetTaskHandler
+from app.application.services.audit_logger import write_audit_log
 from app.application.queries.list_instances import ListInstancesHandler, ListInstancesQuery
-from app.application.queries.list_tasks import ListTasksHandler, ListTasksQuery
+from app.application.services.console_port import compute_console_vnc_port
 from app.config import Settings
 from app.domain.auth import User
-from app.domain.errors import DomainError
-from app.ports import VmImageSyncError
+from app.infra.uow import SqlAlchemyUnitOfWork
 
 instance_router = APIRouter(prefix="/instances", tags=["instances"])
-task_router = APIRouter(prefix="/tasks", tags=["tasks"])
-image_router = APIRouter(prefix="/images", tags=["images"])
-legacy_image_router = APIRouter(prefix="/image", tags=["images"])
 logger = logging.getLogger(__name__)
-
-
-def to_instance_response(instance) -> InstanceResponse:
-    return InstanceResponse(
-        id=instance.id,
-        name=instance.name,
-        cpu=instance.resource_spec.cpu,
-        memory_mib=instance.resource_spec.memory_mib,
-        disk_gib=instance.resource_spec.disk_gib,
-        status=instance.status,
-        ip_address=instance.ip_address,
-        host_node=instance.host_node,
-        created_at=instance.created_at,
-        updated_at=instance.updated_at,
-    )
-
-
-def to_task_response(task) -> TaskResponse:
-    return TaskResponse(
-        id=task.id,
-        instance_id=task.instance_id,
-        command=task.command,
-        status=task.status,
-        request_id=task.request_id,
-        request_payload=task.request_payload,
-        result_payload=task.result_payload,
-        error_code=task.error_code,
-        error_message=task.error_message,
-        attempt_count=task.attempt_count,
-        max_attempts=task.max_attempts,
-        created_at=task.created_at,
-        started_at=task.started_at,
-        finished_at=task.finished_at,
-        updated_at=task.updated_at,
-    )
-
-
-def _get_task_tenant_id(session: Session, task_id: UUID) -> UUID | None:
-    row = session.execute(
-        text(
-            """
-            SELECT i.tenant_id
-            FROM instance_tasks t
-            JOIN instances i ON i.id = t.instance_id
-            WHERE t.id = :task_id
-            """
-        ),
-        {"task_id": str(task_id)},
-    ).mappings().first()
-    if not row:
-        return None
-    return row["tenant_id"]
-
-
-@image_router.get("", response_model=ListVmImagesResponse)
-def list_images(
-    request: Request,
-    _=Depends(require_roles("viewer", "operator", "admin")),
-):
-    catalog = request.app.state.vm_image_catalog
-    return ListVmImagesResponse(
-        items=[
-            VmImageResponse(
-                id=entry.id,
-                url=entry.url,
-                format=entry.image_format,
-                is_default=entry.id == catalog.default_id,
-                has_checksum=bool(entry.sha256),
-                description=entry.description,
-            )
-            for entry in catalog.entries
-        ]
-    )
-
-
-def _sync_images_impl(request: Request) -> SyncVmImagesResponse:
-    try:
-        result = request.app.state.vm_image_sync_port.sync_images()
-    except VmImageSyncError as exc:
-        status_code = 502
-        if exc.code == "VALIDATION_ERROR":
-            status_code = 400
-        elif exc.code == "TIMEOUT":
-            status_code = 504
-        raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
-
-    return SyncVmImagesResponse.model_validate(result)
-
-
-@image_router.post("/sync", response_model=SyncVmImagesResponse)
-def sync_images(
-    request: Request,
-    _=Depends(require_roles("admin")),
-):
-    return _sync_images_impl(request)
-
-
-@legacy_image_router.post("/sync", response_model=SyncVmImagesResponse, include_in_schema=False)
-def sync_images_legacy_alias(
-    request: Request,
-    _=Depends(require_roles("admin")),
-):
-    return _sync_images_impl(request)
 
 
 @instance_router.post("", response_model=InstanceTaskAcceptedResponse, status_code=202)
@@ -165,13 +56,14 @@ def create_instance(
     body: CreateInstanceRequest,
     request: Request,
     session: Session = Depends(get_session),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
     deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
     ensure_mutation_allowed_for_user_tenant(session, current_user)
     tenant_id = resolve_tenant_for_create(current_user, body.tenant_id)
-    advisory_lock(session)
+    uow.advisory_lock(4001)
     handler = CreateInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
@@ -201,7 +93,7 @@ def create_instance(
         tenant_id=tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    session.commit()
+    uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -217,6 +109,7 @@ def update_instance(
     body: UpdateInstanceRequest,
     request: Request,
     session: Session = Depends(get_session),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
@@ -226,7 +119,7 @@ def update_instance(
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
     ensure_instance_access(current_user, existing.tenant_id)
-    advisory_lock(session)
+    uow.advisory_lock(4001)
     handler = UpdateInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
@@ -254,7 +147,7 @@ def update_instance(
         tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    session.commit()
+    uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -269,6 +162,7 @@ def delete_instance(
     instance_id: UUID,
     request: Request,
     session: Session = Depends(get_session),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
@@ -278,7 +172,7 @@ def delete_instance(
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
     ensure_instance_access(current_user, existing.tenant_id)
-    advisory_lock(session)
+    uow.advisory_lock(4001)
     handler = DeleteInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
@@ -296,7 +190,7 @@ def delete_instance(
         tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    session.commit()
+    uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -311,6 +205,7 @@ def stop_instance(
     instance_id: UUID,
     request: Request,
     session: Session = Depends(get_session),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
@@ -320,7 +215,7 @@ def stop_instance(
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
     ensure_instance_access(current_user, existing.tenant_id)
-    advisory_lock(session)
+    uow.advisory_lock(4001)
     handler = StopInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
@@ -338,7 +233,7 @@ def stop_instance(
         tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    session.commit()
+    uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -353,6 +248,7 @@ def start_instance(
     instance_id: UUID,
     request: Request,
     session: Session = Depends(get_session),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
@@ -362,7 +258,7 @@ def start_instance(
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
     ensure_instance_access(current_user, existing.tenant_id)
-    advisory_lock(session)
+    uow.advisory_lock(4001)
     handler = StartInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
@@ -382,7 +278,7 @@ def start_instance(
         tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    session.commit()
+    uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -440,6 +336,7 @@ def issue_console_ticket(
     instance_id: UUID,
     request: Request,
     session: Session = Depends(get_session),
+    uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     deps = build_vm_query_deps(session)
@@ -469,7 +366,7 @@ def issue_console_ticket(
         tenant_id=instance.tenant_id,
         metadata={"expires_at": ticket.expires_at.isoformat()},
     )
-    session.commit()
+    uow.commit()
     return ConsoleTicketResponse(
         ticket=ticket.ticket,
         expires_at=ticket.expires_at,
@@ -569,177 +466,3 @@ async def proxy_instance_console(
             await websocket.close()
         except RuntimeError:
             pass
-
-
-@task_router.get("", response_model=ListTasksResponse)
-def list_tasks(
-    session: Session = Depends(get_session),
-    limit: int = Query(default=20, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    status: str | None = Query(default=None),
-    instance_id: UUID | None = Query(default=None),
-    command: str | None = Query(default=None),
-    tenant_id: UUID | None = Query(default=None),
-    current_user: User = Depends(require_roles("viewer", "operator", "admin")),
-):
-    deps = build_vm_query_deps(session)
-    effective_tenant_id = resolve_tenant_scope_for_list(current_user, tenant_id)
-    handler = ListTasksHandler(task_repository=deps.task_repository)
-    result = handler.handle(
-        ListTasksQuery(
-            limit=limit,
-            offset=offset,
-            status=status,
-            instance_id=instance_id,
-            command=command,
-            tenant_id=effective_tenant_id,
-        )
-    )
-    return ListTasksResponse(
-        items=[to_task_response(task) for task in result.items],
-        total=result.total,
-        limit=limit,
-        offset=offset,
-    )
-
-
-@task_router.get("/{task_id}", response_model=TaskResponse)
-def get_task(
-    task_id: UUID,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles("viewer", "operator", "admin")),
-):
-    deps = build_vm_query_deps(session)
-    task_tenant_id = _get_task_tenant_id(session, task_id)
-    if task_tenant_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
-    ensure_task_access(current_user, task_tenant_id)
-    handler = GetTaskHandler(task_repository=deps.task_repository)
-    return to_task_response(handler.handle(task_id))
-
-
-@task_router.post("/{task_id}/retry", response_model=InstanceTaskAcceptedResponse, status_code=202)
-def retry_task(
-    task_id: UUID,
-    request: Request,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles("operator", "admin")),
-):
-    settings: Settings = request.app.state.settings
-    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
-    ensure_mutation_allowed_for_user_tenant(session, current_user)
-    task_tenant_id = _get_task_tenant_id(session, task_id)
-    if task_tenant_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
-    ensure_task_access(current_user, task_tenant_id)
-    advisory_lock(session)
-    handler = RetryTaskHandler(
-        write_repository=deps.write_repository,
-        task_repository=deps.task_repository,
-        outbox_repository=deps.outbox_repository,
-        outbox_max_attempts=settings.outbox_max_attempts,
-        accounting=deps.accounting,
-        quota_accounting=deps.quota_accounting,
-    )
-    accepted = handler.handle(RetryTaskCommand(task_id=task_id))
-    write_audit_log(
-        session=session,
-        request=request,
-        action="task.retry.requested",
-        target_type="task",
-        target_id=str(task_id),
-        actor_user=current_user,
-        tenant_id=task_tenant_id,
-        metadata={
-            "new_task_id": str(accepted.task_id),
-            "instance_id": str(accepted.instance_id),
-            "command": accepted.command,
-        },
-    )
-    session.commit()
-    return InstanceTaskAcceptedResponse(
-        task_id=accepted.task_id,
-        instance_id=accepted.instance_id,
-        status=accepted.status,
-        command=accepted.command,
-        accepted_at=accepted.accepted_at,
-    )
-
-
-@task_router.post("/{task_id}/cancel", response_model=InstanceTaskAcceptedResponse, status_code=202)
-def cancel_task(
-    task_id: UUID,
-    request: Request,
-    body: CancelTaskRequest | None = None,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(require_roles("operator", "admin")),
-):
-    settings: Settings = request.app.state.settings
-    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
-    ensure_mutation_allowed_for_user_tenant(session, current_user)
-    task_tenant_id = _get_task_tenant_id(session, task_id)
-    if task_tenant_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
-    ensure_task_access(current_user, task_tenant_id)
-    advisory_lock(session)
-    handler = CancelTaskHandler(
-        write_repository=deps.write_repository,
-        task_repository=deps.task_repository,
-        outbox_repository=deps.outbox_repository,
-        outbox_max_attempts=settings.outbox_max_attempts,
-    )
-    try:
-        accepted = handler.handle(
-            CancelTaskCommand(
-                task_id=task_id,
-                actor_user_id=current_user.id,
-                reason=body.reason if body else None,
-            )
-        )
-    except DomainError as exc:
-        write_audit_log(
-            session=session,
-            request=request,
-            action="task.cancel.failed",
-            target_type="task",
-            target_id=str(task_id),
-            actor_user=current_user,
-            tenant_id=task_tenant_id,
-            metadata={"reason": body.reason if body else None, "error_code": exc.code, "error_message": str(exc)},
-        )
-        session.commit()
-        raise
-
-    write_audit_log(
-        session=session,
-        request=request,
-        action="task.cancel.requested",
-        target_type="task",
-        target_id=str(task_id),
-        actor_user=current_user,
-        tenant_id=task_tenant_id,
-        metadata={
-            "reason": body.reason if body else None,
-            "result_status": accepted.status,
-            "instance_id": str(accepted.instance_id),
-        },
-    )
-    if accepted.status == "canceled":
-        write_audit_log(
-            session=session,
-            request=request,
-            action="task.cancel.completed",
-            target_type="task",
-            target_id=str(task_id),
-            actor_user=current_user,
-            tenant_id=task_tenant_id,
-            metadata={"reason": body.reason if body else None},
-        )
-    session.commit()
-    return InstanceTaskAcceptedResponse(
-        task_id=accepted.task_id,
-        instance_id=accepted.instance_id,
-        status=accepted.status,
-        command=accepted.command,
-        accepted_at=accepted.accepted_at,
-    )

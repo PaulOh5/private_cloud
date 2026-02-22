@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pika
 
-from app.infra.messaging.rabbitmq import (
+from app.infra.rabbitmq import (
     COMMAND_EXCHANGE,
     COMMAND_QUEUE,
     DEAD_LETTER_EXCHANGE,

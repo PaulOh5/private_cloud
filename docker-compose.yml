@@ -75,6 +75,42 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  main-api-worker:
+    build:
+      context: ./main-api
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker_main"]
+    environment:
+      APP_NAME: main-api-worker
+      POSTGRES_USER: ${POSTGRES_USER:-cloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cloud}
+      POSTGRES_DB: ${POSTGRES_DB:-private_cloud}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      RABBITMQ_USER: ${RABBITMQ_USER:-cloud}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-cloud}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      HOST_NODE: ${HOST_NODE:-localhost}
+      TOTAL_CPU: ${TOTAL_CPU:-32}
+      TOTAL_MEMORY_MIB: ${TOTAL_MEMORY_MIB:-131072}
+      TOTAL_DISK_GIB: ${TOTAL_DISK_GIB:-2000}
+      TOTAL_INSTANCES: ${TOTAL_INSTANCES:-1000}
+      VM_COMMAND_TIMEOUT_SECONDS: 120
+      TASK_STALE_QUEUED_TIMEOUT_SECONDS: ${TASK_STALE_QUEUED_TIMEOUT_SECONDS:-180}
+      TASK_STALE_SWEEP_INTERVAL_SECONDS: ${TASK_STALE_SWEEP_INTERVAL_SECONDS:-15}
+      OUTBOX_RELAY_ENABLED: ${OUTBOX_RELAY_ENABLED:-true}
+      OUTBOX_NOTIFY_CHANNEL: ${OUTBOX_NOTIFY_CHANNEL:-command_outbox_wakeup}
+      OUTBOX_POLL_INTERVAL_SECONDS: ${OUTBOX_POLL_INTERVAL_SECONDS:-1.0}
+      OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-100}
+      OUTBOX_LOCK_TIMEOUT_SECONDS: ${OUTBOX_LOCK_TIMEOUT_SECONDS:-30}
+      OUTBOX_RETRY_MAX_SECONDS: ${OUTBOX_RETRY_MAX_SECONDS:-60}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
   vm-manager:
     build:
       context: ./vm-manager

@@ -1,10 +1,12 @@
-from contextlib import contextmanager
-from pathlib import Path
+from __future__ import annotations
 
-from sqlalchemy import Engine, create_engine, text
+from contextlib import contextmanager
+
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
+from app.infra.migrations import apply_schema as run_schema_migrations
 
 
 def build_engine(settings: Settings) -> Engine:
@@ -16,10 +18,7 @@ def build_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 def apply_schema(engine: Engine) -> None:
-    schema_file = Path(__file__).resolve().parents[2] / "migrations" / "001_init.sql"
-    sql = schema_file.read_text(encoding="utf-8")
-    with engine.begin() as conn:
-        conn.execute(text(sql))
+    run_schema_migrations(engine)
 
 
 @contextmanager

@@ -18,8 +18,12 @@ from app.adapters.postgres_repositories import (
 from app.runtime.workers.outbox_relay import OutboxRelay
 from app.adapters.resource_accounting import HostResourceAccountingAdapter
 from app.runtime.workers.stale_task_monitor import StaleTaskMonitor
-from app.application.commands.create_instance import CreateInstanceCommand, CreateInstanceHandler
-from app.application.commands.update_instance import UpdateInstanceCommand, UpdateInstanceHandler
+from app.application.commands.instance_commands import (
+    CreateInstanceCommand,
+    CreateInstanceHandler,
+    UpdateInstanceCommand,
+    UpdateInstanceHandler,
+)
 from app.domain.errors import ConflictError
 from app.infra.db import apply_schema
 from app.security import hash_password

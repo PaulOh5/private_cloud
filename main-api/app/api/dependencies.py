@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Generator
 from dataclasses import dataclass
 from uuid import UUID
@@ -16,6 +18,7 @@ from app.adapters.postgres_repositories import (
 )
 from app.adapters.resource_accounting import HostResourceAccountingAdapter, TenantQuotaAccountingAdapter
 from app.domain.auth import User
+from app.infra.uow import SqlAlchemyUnitOfWork
 from app.ports import (
     CommandOutboxRepository,
     InstanceReadRepository,
@@ -53,6 +56,10 @@ def get_session(request: Request) -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
+
+
+def get_uow(session: Session = Depends(get_session)) -> SqlAlchemyUnitOfWork:
+    return SqlAlchemyUnitOfWork(session)
 
 
 def advisory_lock(session: Session, key: int = 4001) -> None:

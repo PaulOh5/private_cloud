@@ -26,6 +26,26 @@ class NotFoundError(DomainError):
     code = "VM_NOT_FOUND"
 
 
+class InstanceNotFoundError(DomainError):
+    code = "INSTANCE_NOT_FOUND"
+
+
+class TaskNotFoundError(DomainError):
+    code = "TASK_NOT_FOUND"
+
+
+class TenantNotFoundError(DomainError):
+    code = "TENANT_NOT_FOUND"
+
+
+class UserNotFoundError(DomainError):
+    code = "USER_NOT_FOUND"
+
+
+class AuditLogNotFoundError(DomainError):
+    code = "AUDIT_LOG_NOT_FOUND"
+
+
 class ConflictError(DomainError):
     code = "CONFLICT"
 
