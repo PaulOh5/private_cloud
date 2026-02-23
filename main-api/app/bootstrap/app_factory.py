@@ -23,6 +23,7 @@ from app.application.services.vm_image_catalog import load_vm_image_catalog
 from app.bootstrap.database import initialize_database
 from app.bootstrap.workers import build_worker_lifecycle
 from app.config import Settings, get_settings
+from app.infra.db import build_sync_session_factory
 
 
 def _build_lifespan(worker_lifecycle):
@@ -37,10 +38,18 @@ def _build_lifespan(worker_lifecycle):
     return lifespan
 
 
-def _configure_app_state(app: FastAPI, settings: Settings, engine, session_factory, vm_publisher, vm_image_catalog) -> None:
+def _configure_app_state(
+    app: FastAPI,
+    settings: Settings,
+    engine,
+    session_factory,
+    vm_publisher,
+    vm_image_catalog,
+) -> None:
     app.state.settings = settings
     app.state.engine = engine
-    app.state.session_factory = session_factory
+    app.state.async_session_factory = session_factory
+    app.state.session_factory = build_sync_session_factory(session_factory)
     app.state.vm_publisher = vm_publisher
     app.state.vm_port = vm_publisher
     app.state.vm_image_sync_port = RabbitMqVmImageSyncRpcAdapter(
@@ -63,7 +72,9 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(task_router)
 
 
-def create_api_app(*, include_workers: bool = False, settings: Settings | None = None) -> FastAPI:
+def create_api_app(
+    *, include_workers: bool = False, settings: Settings | None = None
+) -> FastAPI:
     settings = settings or get_settings()
     vm_image_catalog = load_vm_image_catalog(settings)
     engine, session_factory = initialize_database(settings)
@@ -75,7 +86,9 @@ def create_api_app(*, include_workers: bool = False, settings: Settings | None =
         lifespan = _build_lifespan(worker_lifecycle)
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
-    _configure_app_state(app, settings, engine, session_factory, vm_publisher, vm_image_catalog)
+    _configure_app_state(
+        app, settings, engine, session_factory, vm_publisher, vm_image_catalog
+    )
     _register_routers(app)
     register_exception_handlers(app)
     return app

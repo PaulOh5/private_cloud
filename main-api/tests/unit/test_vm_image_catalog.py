@@ -19,7 +19,10 @@ def test_load_vm_image_catalog_fallback_from_base_image_url():
     assert catalog.entries[0].id == "ubuntu-24.04"
     assert catalog.entries[0].sha256 is None
     assert catalog.entries[1].id == "ubuntu-22.04"
-    assert catalog.entries[1].url == "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    assert (
+        catalog.entries[1].url
+        == "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    )
 
 
 def test_load_vm_image_catalog_requires_checksum_when_catalog_configured():
@@ -36,10 +39,10 @@ def test_load_vm_image_catalog_requires_checksum_when_catalog_configured():
 
 def test_load_vm_image_catalog_respects_default_id_override():
     settings = Settings(
-        vm_image_catalog_json='['
+        vm_image_catalog_json="["
         '{"id":"ubuntu-24.04","url":"https://example.com/noble.qcow2","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","format":"qcow2"},'
         '{"id":"ubuntu-22.04","url":"https://example.com/jammy.qcow2","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","format":"qcow2"}'
-        ']',
+        "]",
         vm_image_default_id="ubuntu-22.04",
         vm_image_allow_insecure_no_checksum=False,
     )

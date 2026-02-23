@@ -1,7 +1,17 @@
 from app.api.schemas.audit import AuditLogResponse, ListAuditLogsResponse
-from app.api.schemas.auth import AccessTokenResponse, CurrentUserResponse, LoginRequest, RefreshTokenRequest
+from app.api.schemas.auth import (
+    AccessTokenResponse,
+    CurrentUserResponse,
+    LoginRequest,
+    RefreshTokenRequest,
+)
 from app.api.schemas.common import ErrorResponse
-from app.api.schemas.images import ListVmImagesResponse, SyncVmImagesResponse, SyncVmImagesResponseItem, VmImageResponse
+from app.api.schemas.images import (
+    ListVmImagesResponse,
+    SyncVmImagesResponse,
+    SyncVmImagesResponseItem,
+    VmImageResponse,
+)
 from app.api.schemas.instances import (
     ConsoleTicketResponse,
     CreateInstanceRequest,

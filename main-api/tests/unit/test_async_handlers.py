@@ -29,7 +29,7 @@ class SpyCapacity:
     def __init__(self):
         self.calls: list = []
 
-    def assert_capacity(self, check):
+    async def assert_capacity(self, check):
         self.calls.append(check)
 
 
@@ -37,21 +37,22 @@ class SpyQuota:
     def __init__(self):
         self.calls: list = []
 
-    def assert_quota(self, check):
+    async def assert_quota(self, check):
         self.calls.append(check)
 
 
 class FailingQuota:
-    def assert_quota(self, _check):
+    async def assert_quota(self, _check):
         raise QuotaExceededError("quota exceeded")
 
 
 class FailingCapacity:
-    def assert_capacity(self, _check):
+    async def assert_capacity(self, _check):
         raise CapacityExceededError("capacity exceeded")
 
 
-def test_create_handler_queues_task_and_publishes(
+@pytest.mark.asyncio
+async def test_create_handler_queues_task_and_publishes(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -64,7 +65,7 @@ def test_create_handler_queues_task_and_publishes(
         accounting=dummy_capacity,
     )
 
-    accepted = handler.handle(
+    accepted = await handler.handle(
         CreateInstanceCommand(
             cpu=2,
             memory_mib=2048,
@@ -85,7 +86,8 @@ def test_create_handler_queues_task_and_publishes(
     assert dummy_provisioning.calls[0]["command"] == "instance.create"
 
 
-def test_create_handler_forwards_optional_image_id(
+@pytest.mark.asyncio
+async def test_create_handler_forwards_optional_image_id(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -98,7 +100,7 @@ def test_create_handler_forwards_optional_image_id(
         accounting=dummy_capacity,
     )
 
-    accepted = handler.handle(
+    accepted = await handler.handle(
         CreateInstanceCommand(
             cpu=2,
             memory_mib=2048,
@@ -111,10 +113,14 @@ def test_create_handler_forwards_optional_image_id(
 
     assert accepted.status == "queued"
     assert dummy_provisioning.calls[0]["payload"]["image_id"] == "ubuntu-22.04"
-    assert in_memory_task_repo.tasks[accepted.task_id].request_payload["image_id"] == "ubuntu-22.04"
+    assert (
+        in_memory_task_repo.tasks[accepted.task_id].request_payload["image_id"]
+        == "ubuntu-22.04"
+    )
 
 
-def test_update_handler_rejects_when_active_task_exists(
+@pytest.mark.asyncio
+async def test_update_handler_rejects_when_active_task_exists(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -167,7 +173,7 @@ def test_update_handler_rejects_when_active_task_exists(
     )
 
     with pytest.raises(ConflictError):
-        handler.handle(
+        await handler.handle(
             UpdateInstanceCommand(
                 instance_id=instance_id,
                 cpu=2,
@@ -178,7 +184,8 @@ def test_update_handler_rejects_when_active_task_exists(
         )
 
 
-def test_delete_handler_marks_pending_and_publishes(
+@pytest.mark.asyncio
+async def test_delete_handler_marks_pending_and_publishes(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -207,7 +214,7 @@ def test_delete_handler_marks_pending_and_publishes(
         outbox_repository=dummy_provisioning,
     )
 
-    accepted = handler.handle(DeleteInstanceCommand(instance_id=instance_id))
+    accepted = await handler.handle(DeleteInstanceCommand(instance_id=instance_id))
 
     assert accepted.command == "delete"
     updated = in_memory_instance_repo.instances[instance_id]
@@ -217,7 +224,8 @@ def test_delete_handler_marks_pending_and_publishes(
     assert dummy_provisioning.calls[0]["command"] == "instance.delete"
 
 
-def test_retry_handler_from_failed_creates_new_task_and_publishes(
+@pytest.mark.asyncio
+async def test_retry_handler_from_failed_creates_new_task_and_publishes(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -275,7 +283,7 @@ def test_retry_handler_from_failed_creates_new_task_and_publishes(
         outbox_repository=dummy_provisioning,
         accounting=dummy_capacity,
     )
-    accepted = handler.handle(RetryTaskCommand(task_id=failed_task_id))
+    accepted = await handler.handle(RetryTaskCommand(task_id=failed_task_id))
 
     assert accepted.task_id != failed_task_id
     assert accepted.status == "queued"
@@ -286,7 +294,8 @@ def test_retry_handler_from_failed_creates_new_task_and_publishes(
     assert dummy_provisioning.calls[-1]["payload"]["image_id"] == "ubuntu-24.04"
 
 
-def test_retry_handler_blocked_when_active_task_exists(
+@pytest.mark.asyncio
+async def test_retry_handler_blocked_when_active_task_exists(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -319,7 +328,12 @@ def test_retry_handler_blocked_when_active_task_exists(
             command="update",
             status="failed",
             request_id=uuid4(),
-            request_payload={"cpu": 3, "memory_mib": 3072, "disk_gib": 35, "host_node": "localhost"},
+            request_payload={
+                "cpu": 3,
+                "memory_mib": 3072,
+                "disk_gib": 35,
+                "host_node": "localhost",
+            },
             result_payload=None,
             error_code="QEMU_ERROR",
             error_message="boom",
@@ -358,10 +372,11 @@ def test_retry_handler_blocked_when_active_task_exists(
         accounting=dummy_capacity,
     )
     with pytest.raises(ConflictError):
-        handler.handle(RetryTaskCommand(task_id=failed_task_id))
+        await handler.handle(RetryTaskCommand(task_id=failed_task_id))
 
 
-def test_update_handler_on_stopped_sets_boot_after_update_false(
+@pytest.mark.asyncio
+async def test_update_handler_on_stopped_sets_boot_after_update_false(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -390,7 +405,7 @@ def test_update_handler_on_stopped_sets_boot_after_update_false(
         outbox_repository=dummy_provisioning,
         accounting=dummy_capacity,
     )
-    accepted = handler.handle(
+    accepted = await handler.handle(
         UpdateInstanceCommand(
             instance_id=instance_id,
             cpu=3,
@@ -405,7 +420,8 @@ def test_update_handler_on_stopped_sets_boot_after_update_false(
     assert dummy_provisioning.calls[0]["payload"]["boot_after_update"] is False
 
 
-def test_start_handler_stopped_performs_quota_capacity_checks_and_publishes(
+@pytest.mark.asyncio
+async def test_start_handler_stopped_performs_quota_capacity_checks_and_publishes(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -436,7 +452,9 @@ def test_start_handler_stopped_performs_quota_capacity_checks_and_publishes(
         accounting=capacity,
         quota_accounting=quota,
     )
-    accepted = handler.handle(StartInstanceCommand(instance_id=instance_id, host_node="localhost"))
+    accepted = await handler.handle(
+        StartInstanceCommand(instance_id=instance_id, host_node="localhost")
+    )
 
     assert accepted.command == "start"
     assert accepted.status == "queued"
@@ -446,7 +464,8 @@ def test_start_handler_stopped_performs_quota_capacity_checks_and_publishes(
     assert dummy_provisioning.calls[0]["command"] == "instance.start"
 
 
-def test_start_handler_quota_exceeded_raises(
+@pytest.mark.asyncio
+async def test_start_handler_quota_exceeded_raises(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -477,10 +496,13 @@ def test_start_handler_quota_exceeded_raises(
         quota_accounting=FailingQuota(),
     )
     with pytest.raises(QuotaExceededError):
-        handler.handle(StartInstanceCommand(instance_id=instance_id, host_node="localhost"))
+        await handler.handle(
+            StartInstanceCommand(instance_id=instance_id, host_node="localhost")
+        )
 
 
-def test_start_handler_capacity_exceeded_raises(
+@pytest.mark.asyncio
+async def test_start_handler_capacity_exceeded_raises(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -510,10 +532,13 @@ def test_start_handler_capacity_exceeded_raises(
         quota_accounting=None,
     )
     with pytest.raises(CapacityExceededError):
-        handler.handle(StartInstanceCommand(instance_id=instance_id, host_node="localhost"))
+        await handler.handle(
+            StartInstanceCommand(instance_id=instance_id, host_node="localhost")
+        )
 
 
-def test_stop_handler_running_marks_pending_and_publishes(
+@pytest.mark.asyncio
+async def test_stop_handler_running_marks_pending_and_publishes(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -540,7 +565,7 @@ def test_stop_handler_running_marks_pending_and_publishes(
         task_repository=in_memory_task_repo,
         outbox_repository=dummy_provisioning,
     )
-    accepted = handler.handle(StopInstanceCommand(instance_id=instance_id))
+    accepted = await handler.handle(StopInstanceCommand(instance_id=instance_id))
 
     assert accepted.command == "stop"
     assert accepted.status == "queued"
@@ -548,7 +573,8 @@ def test_stop_handler_running_marks_pending_and_publishes(
     assert dummy_provisioning.calls[0]["command"] == "instance.stop"
 
 
-def test_cancel_handler_queued_marks_canceled(
+@pytest.mark.asyncio
+async def test_cancel_handler_queued_marks_canceled(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -579,7 +605,12 @@ def test_cancel_handler_queued_marks_canceled(
             command="create",
             status="queued",
             request_id=uuid4(),
-            request_payload={"cpu": 1, "memory_mib": 1024, "disk_gib": 20, "host_node": "localhost"},
+            request_payload={
+                "cpu": 1,
+                "memory_mib": 1024,
+                "disk_gib": 20,
+                "host_node": "localhost",
+            },
             result_payload=None,
             error_code=None,
             error_message=None,
@@ -597,7 +628,11 @@ def test_cancel_handler_queued_marks_canceled(
         task_repository=in_memory_task_repo,
         outbox_repository=dummy_provisioning,
     )
-    accepted = handler.handle(CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="user requested"))
+    accepted = await handler.handle(
+        CancelTaskCommand(
+            task_id=task_id, actor_user_id=uuid4(), reason="user requested"
+        )
+    )
 
     assert accepted.status == "canceled"
     assert in_memory_task_repo.tasks[task_id].status == "canceled"
@@ -605,7 +640,8 @@ def test_cancel_handler_queued_marks_canceled(
     assert dummy_provisioning.calls == []
 
 
-def test_cancel_handler_running_sets_cancel_pending_and_publishes(
+@pytest.mark.asyncio
+async def test_cancel_handler_running_sets_cancel_pending_and_publishes(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -636,7 +672,12 @@ def test_cancel_handler_running_sets_cancel_pending_and_publishes(
             command="update",
             status="running",
             request_id=uuid4(),
-            request_payload={"cpu": 2, "memory_mib": 2048, "disk_gib": 30, "host_node": "localhost"},
+            request_payload={
+                "cpu": 2,
+                "memory_mib": 2048,
+                "disk_gib": 30,
+                "host_node": "localhost",
+            },
             result_payload=None,
             error_code=None,
             error_message=None,
@@ -654,7 +695,9 @@ def test_cancel_handler_running_sets_cancel_pending_and_publishes(
         task_repository=in_memory_task_repo,
         outbox_repository=dummy_provisioning,
     )
-    accepted = handler.handle(CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="stop"))
+    accepted = await handler.handle(
+        CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="stop")
+    )
 
     assert accepted.status == "cancel_pending"
     assert in_memory_task_repo.tasks[task_id].status == "cancel_pending"
@@ -663,7 +706,8 @@ def test_cancel_handler_running_sets_cancel_pending_and_publishes(
     assert dummy_provisioning.calls[0]["task_id"] == task_id
 
 
-def test_cancel_handler_running_start_task_is_supported(
+@pytest.mark.asyncio
+async def test_cancel_handler_running_start_task_is_supported(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -711,12 +755,15 @@ def test_cancel_handler_running_start_task_is_supported(
         task_repository=in_memory_task_repo,
         outbox_repository=dummy_provisioning,
     )
-    accepted = handler.handle(CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="stop request"))
+    accepted = await handler.handle(
+        CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="stop request")
+    )
     assert accepted.status == "cancel_pending"
     assert dummy_provisioning.calls[0]["command"] == "instance.cancel"
 
 
-def test_cancel_handler_duplicate_cancel_is_idempotent(
+@pytest.mark.asyncio
+async def test_cancel_handler_duplicate_cancel_is_idempotent(
     in_memory_instance_repo,
     in_memory_task_repo,
     dummy_provisioning,
@@ -747,7 +794,12 @@ def test_cancel_handler_duplicate_cancel_is_idempotent(
             command="update",
             status="cancel_pending",
             request_id=uuid4(),
-            request_payload={"cpu": 2, "memory_mib": 2048, "disk_gib": 30, "host_node": "localhost"},
+            request_payload={
+                "cpu": 2,
+                "memory_mib": 2048,
+                "disk_gib": 30,
+                "host_node": "localhost",
+            },
             result_payload=None,
             error_code=None,
             error_message=None,
@@ -765,7 +817,9 @@ def test_cancel_handler_duplicate_cancel_is_idempotent(
         task_repository=in_memory_task_repo,
         outbox_repository=dummy_provisioning,
     )
-    accepted = handler.handle(CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="repeat"))
+    accepted = await handler.handle(
+        CancelTaskCommand(task_id=task_id, actor_user_id=uuid4(), reason="repeat")
+    )
 
     assert accepted.status == "cancel_pending"
     assert dummy_provisioning.calls == []

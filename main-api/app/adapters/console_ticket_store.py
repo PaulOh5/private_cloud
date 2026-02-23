@@ -21,7 +21,9 @@ class ConsoleTicketStore:
         self._tickets: dict[str, ConsoleTicketRecord] = {}
         self._lock = Lock()
 
-    def issue(self, *, instance_id: UUID, issued_by_user_id: UUID, ttl_seconds: int) -> ConsoleTicketRecord:
+    def issue(
+        self, *, instance_id: UUID, issued_by_user_id: UUID, ttl_seconds: int
+    ) -> ConsoleTicketRecord:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=max(ttl_seconds, 1))
         record = ConsoleTicketRecord(
@@ -51,6 +53,10 @@ class ConsoleTicketStore:
             return record
 
     def _prune_locked(self, now: datetime) -> None:
-        stale_keys = [key for key, value in self._tickets.items() if value.used or value.expires_at <= now]
+        stale_keys = [
+            key
+            for key, value in self._tickets.items()
+            if value.used or value.expires_at <= now
+        ]
         for key in stale_keys:
             self._tickets.pop(key, None)

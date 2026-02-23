@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
 
-from app.adapters.postgres_repositories import PostgresTenantQuotaRepository, PostgresUserRepository
+from app.adapters.postgres_repositories import (
+    PostgresTenantQuotaRepository,
+    PostgresUserRepository,
+)
+from app.adapters.postgres_repositories.orm.resource import ResourceCapacityModel
+from app.adapters.postgres_repositories.orm.tenant import TenantModel
 from app.config import Settings
-from app.infra.db import apply_schema, build_engine, build_session_factory
+from app.infra.db import apply_schema_async, build_engine, build_session_factory
 from app.security import hash_password
 
 logger = logging.getLogger(__name__)
@@ -20,15 +26,15 @@ DEFAULT_TENANT_KEY = "default"
 DEFAULT_TENANT_NAME = "Default Tenant"
 
 
-def run_with_db_retry(
+async def run_with_db_retry(
     description: str,
-    fn: Callable[[], None],
+    fn: Callable[[], Awaitable[None]],
     attempts: int = 20,
     delay_seconds: float = 1.0,
 ) -> None:
     for attempt in range(1, attempts + 1):
         try:
-            fn()
+            await fn()
             return
         except OperationalError:
             if attempt == attempts:
@@ -40,65 +46,75 @@ def run_with_db_retry(
                 attempts,
                 delay_seconds,
             )
-            time.sleep(delay_seconds)
+            await asyncio.sleep(delay_seconds)
 
 
-def bootstrap_data(session_factory, settings: Settings) -> None:
-    with session_factory() as session:
-        session.execute(
-            text(
-                """
-                INSERT INTO tenants (id, key, name, is_active, created_at, updated_at)
-                VALUES (:id, :key, :name, true, NOW(), NOW())
-                ON CONFLICT (key) DO UPDATE
-                  SET name = EXCLUDED.name,
-                      is_active = true,
-                      updated_at = NOW()
-                """
-            ),
-            {
-                "id": DEFAULT_TENANT_ID,
-                "key": DEFAULT_TENANT_KEY,
-                "name": DEFAULT_TENANT_NAME,
-            },
+async def bootstrap_data(session_factory, settings: Settings) -> None:
+    async with session_factory() as session:
+        now = datetime.now(timezone.utc)
+        await session.execute(
+            pg_insert(TenantModel)
+            .values(
+                id=UUID(DEFAULT_TENANT_ID),
+                key=DEFAULT_TENANT_KEY,
+                name=DEFAULT_TENANT_NAME,
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_update(
+                index_elements=[TenantModel.key],
+                set_={
+                    "name": DEFAULT_TENANT_NAME,
+                    "is_active": True,
+                    "updated_at": now,
+                },
+            )
         )
-        session.execute(
-            text(
-                """
-                INSERT INTO resource_capacity (host_node, total_cpu, total_memory_mib, total_disk_gib)
-                VALUES (:host_node, :total_cpu, :total_memory_mib, :total_disk_gib)
-                ON CONFLICT (host_node) DO UPDATE
-                  SET total_cpu = EXCLUDED.total_cpu,
-                      total_memory_mib = EXCLUDED.total_memory_mib,
-                      total_disk_gib = EXCLUDED.total_disk_gib
-                """
-            ),
-            {
-                "host_node": settings.host_node,
-                "total_cpu": settings.total_cpu,
-                "total_memory_mib": settings.total_memory_mib,
-                "total_disk_gib": settings.total_disk_gib,
-            },
+        await session.execute(
+            pg_insert(ResourceCapacityModel)
+            .values(
+                host_node=settings.host_node,
+                total_cpu=settings.total_cpu,
+                total_memory_mib=settings.total_memory_mib,
+                total_disk_gib=settings.total_disk_gib,
+            )
+            .on_conflict_do_update(
+                index_elements=[ResourceCapacityModel.host_node],
+                set_={
+                    "total_cpu": settings.total_cpu,
+                    "total_memory_mib": settings.total_memory_mib,
+                    "total_disk_gib": settings.total_disk_gib,
+                },
+            )
         )
-        PostgresTenantQuotaRepository(session).upsert(
+        await PostgresTenantQuotaRepository(session).upsert(
             tenant_id=UUID(DEFAULT_TENANT_ID),
             max_instances=settings.total_instances,
             max_cpu=settings.total_cpu,
             max_memory_mib=settings.total_memory_mib,
             max_disk_gib=settings.total_disk_gib,
         )
-        PostgresUserRepository(session).ensure_user(
+        await PostgresUserRepository(session).ensure_user(
             username=settings.bootstrap_admin_username,
             password_hash=hash_password(settings.bootstrap_admin_password),
             role=settings.bootstrap_admin_role,
             tenant_id=None,
         )
-        session.commit()
+        await session.commit()
+
+
+async def initialize_database_async(settings: Settings):
+    engine = build_engine(settings)
+    await run_with_db_retry(
+        "apply_schema", lambda: apply_schema_async(engine, settings)
+    )
+    session_factory = build_session_factory(engine)
+    await run_with_db_retry(
+        "bootstrap_data", lambda: bootstrap_data(session_factory, settings)
+    )
+    return engine, session_factory
 
 
 def initialize_database(settings: Settings):
-    engine = build_engine(settings)
-    run_with_db_retry("apply_schema", lambda: apply_schema(engine))
-    session_factory = build_session_factory(engine)
-    run_with_db_retry("bootstrap_data", lambda: bootstrap_data(session_factory, settings))
-    return engine, session_factory
+    return asyncio.run(initialize_database_async(settings))

@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
-
 from app.application.commands.common import TaskAccepted
 from app.domain.errors import ConflictError, NotFoundError, ValidationError
 from app.domain.models import Instance, InstanceTask, ResourceSpec
@@ -46,12 +44,13 @@ class CreateInstanceHandler:
         self.accounting = accounting
         self.quota_accounting = quota_accounting
 
-    def handle(self, command: CreateInstanceCommand) -> TaskAccepted:
-        spec = ResourceSpec(cpu=command.cpu, memory_mib=command.memory_mib, disk_gib=command.disk_gib)
+    async def handle(self, command: CreateInstanceCommand) -> TaskAccepted:
+        spec = ResourceSpec(
+            cpu=command.cpu, memory_mib=command.memory_mib, disk_gib=command.disk_gib
+        )
         spec.validate()
-
         if self.quota_accounting is not None:
-            self.quota_accounting.assert_quota(
+            await self.quota_accounting.assert_quota(
                 TenantQuotaCheckInput(
                     tenant_id=command.tenant_id,
                     current=None,
@@ -60,8 +59,7 @@ class CreateInstanceHandler:
                     requested_profile="running",
                 )
             )
-
-        self.accounting.assert_capacity(
+        await self.accounting.assert_capacity(
             CapacityCheckInput(
                 host_node=command.host_node,
                 current=None,
@@ -70,12 +68,10 @@ class CreateInstanceHandler:
                 requested_profile="running",
             )
         )
-
         instance_id = uuid4()
         task_id = uuid4()
         request_id = uuid4()
         now = datetime.now(timezone.utc)
-
         instance = Instance(
             id=UUID(str(instance_id)),
             tenant_id=command.tenant_id,
@@ -90,8 +86,7 @@ class CreateInstanceHandler:
             created_at=now,
             updated_at=now,
         )
-        self.write_repository.create(instance)
-
+        await self.write_repository.create(instance)
         task = InstanceTask(
             id=task_id,
             instance_id=instance_id,
@@ -117,9 +112,8 @@ class CreateInstanceHandler:
             finished_at=None,
             updated_at=now,
         )
-        self.task_repository.create_task(task)
-
-        self.outbox_repository.enqueue_command(
+        await self.task_repository.create_task(task)
+        await self.outbox_repository.enqueue_command(
             topic="instance.create",
             payload={
                 "instance_id": str(instance_id),
@@ -134,7 +128,6 @@ class CreateInstanceHandler:
             request_id=request_id,
             max_attempts=self.outbox_max_attempts,
         )
-
         return TaskAccepted(
             task_id=task_id,
             instance_id=instance_id,
@@ -162,20 +155,20 @@ class DeleteInstanceHandler:
         self.outbox_repository = outbox_repository
         self.outbox_max_attempts = max(1, int(outbox_max_attempts))
 
-    def handle(self, command: DeleteInstanceCommand) -> TaskAccepted:
-        instance = self.write_repository.get_for_update(command.instance_id)
+    async def handle(self, command: DeleteInstanceCommand) -> TaskAccepted:
+        instance = await self.write_repository.get_for_update(command.instance_id)
         if not instance:
             raise NotFoundError(f"instance {command.instance_id} not found")
         if instance.status == "deleted":
             raise ValidationError("instance is already deleted")
-        if self.task_repository.has_active_task(command.instance_id):
-            raise ConflictError(f"instance {command.instance_id} already has an active task")
-
+        if await self.task_repository.has_active_task(command.instance_id):
+            raise ConflictError(
+                f"instance {command.instance_id} already has an active task"
+            )
         task_id = uuid4()
         request_id = uuid4()
         now = datetime.now(timezone.utc)
-
-        self.write_repository.update_state(
+        await self.write_repository.update_state(
             command.instance_id,
             status="deleting_pending",
             reserve_resources=False,
@@ -183,7 +176,6 @@ class DeleteInstanceHandler:
             deleted_at=None,
             ip_address=instance.ip_address,
         )
-
         task = InstanceTask(
             id=task_id,
             instance_id=command.instance_id,
@@ -210,9 +202,8 @@ class DeleteInstanceHandler:
             finished_at=None,
             updated_at=now,
         )
-        self.task_repository.create_task(task)
-
-        self.outbox_repository.enqueue_command(
+        await self.task_repository.create_task(task)
+        await self.outbox_repository.enqueue_command(
             topic="instance.delete",
             payload={
                 "instance_id": str(command.instance_id),
@@ -222,7 +213,6 @@ class DeleteInstanceHandler:
             request_id=request_id,
             max_attempts=self.outbox_max_attempts,
         )
-
         return TaskAccepted(
             task_id=task_id,
             instance_id=command.instance_id,
@@ -250,22 +240,22 @@ class StopInstanceHandler:
         self.outbox_repository = outbox_repository
         self.outbox_max_attempts = max(1, int(outbox_max_attempts))
 
-    def handle(self, command: StopInstanceCommand) -> TaskAccepted:
-        instance = self.write_repository.get_for_update(command.instance_id)
+    async def handle(self, command: StopInstanceCommand) -> TaskAccepted:
+        instance = await self.write_repository.get_for_update(command.instance_id)
         if not instance:
             raise NotFoundError(f"instance {command.instance_id} not found")
         if instance.status == "deleted":
             raise ValidationError("cannot stop a deleted instance")
         if instance.status not in {"running", "stopped"}:
             raise ValidationError(f"cannot stop instance from status {instance.status}")
-        if self.task_repository.has_active_task(command.instance_id):
-            raise ConflictError(f"instance {command.instance_id} already has an active task")
-
+        if await self.task_repository.has_active_task(command.instance_id):
+            raise ConflictError(
+                f"instance {command.instance_id} already has an active task"
+            )
         task_id = uuid4()
         request_id = uuid4()
         now = datetime.now(timezone.utc)
-
-        self.write_repository.update_state(
+        await self.write_repository.update_state(
             command.instance_id,
             status="stopping_pending",
             reserve_resources=True,
@@ -273,7 +263,6 @@ class StopInstanceHandler:
             deleted_at=instance.deleted_at,
             ip_address=instance.ip_address,
         )
-
         task = InstanceTask(
             id=task_id,
             instance_id=command.instance_id,
@@ -297,9 +286,8 @@ class StopInstanceHandler:
             finished_at=None,
             updated_at=now,
         )
-        self.task_repository.create_task(task)
-
-        self.outbox_repository.enqueue_command(
+        await self.task_repository.create_task(task)
+        await self.outbox_repository.enqueue_command(
             topic="instance.stop",
             payload={
                 "instance_id": str(command.instance_id),
@@ -309,7 +297,6 @@ class StopInstanceHandler:
             request_id=request_id,
             max_attempts=self.outbox_max_attempts,
         )
-
         return TaskAccepted(
             task_id=task_id,
             instance_id=command.instance_id,
@@ -342,20 +329,23 @@ class StartInstanceHandler:
         self.accounting = accounting
         self.quota_accounting = quota_accounting
 
-    def handle(self, command: StartInstanceCommand) -> TaskAccepted:
-        instance = self.write_repository.get_for_update(command.instance_id)
+    async def handle(self, command: StartInstanceCommand) -> TaskAccepted:
+        instance = await self.write_repository.get_for_update(command.instance_id)
         if not instance:
             raise NotFoundError(f"instance {command.instance_id} not found")
         if instance.status == "deleted":
             raise ValidationError("cannot start a deleted instance")
         if instance.status not in {"running", "stopped"}:
-            raise ValidationError(f"cannot start instance from status {instance.status}")
-        if self.task_repository.has_active_task(command.instance_id):
-            raise ConflictError(f"instance {command.instance_id} already has an active task")
-
+            raise ValidationError(
+                f"cannot start instance from status {instance.status}"
+            )
+        if await self.task_repository.has_active_task(command.instance_id):
+            raise ConflictError(
+                f"instance {command.instance_id} already has an active task"
+            )
         if instance.status == "stopped":
             if self.quota_accounting is not None:
-                self.quota_accounting.assert_quota(
+                await self.quota_accounting.assert_quota(
                     TenantQuotaCheckInput(
                         tenant_id=instance.tenant_id,
                         current=instance.resource_spec,
@@ -364,7 +354,7 @@ class StartInstanceHandler:
                         requested_profile="running",
                     )
                 )
-            self.accounting.assert_capacity(
+            await self.accounting.assert_capacity(
                 CapacityCheckInput(
                     host_node=command.host_node,
                     current=instance.resource_spec,
@@ -373,12 +363,10 @@ class StartInstanceHandler:
                     requested_profile="running",
                 )
             )
-
         task_id = uuid4()
         request_id = uuid4()
         now = datetime.now(timezone.utc)
-
-        self.write_repository.update_state(
+        await self.write_repository.update_state(
             command.instance_id,
             status="starting_pending",
             reserve_resources=True,
@@ -386,7 +374,6 @@ class StartInstanceHandler:
             deleted_at=instance.deleted_at,
             ip_address=instance.ip_address,
         )
-
         task = InstanceTask(
             id=task_id,
             instance_id=command.instance_id,
@@ -410,9 +397,8 @@ class StartInstanceHandler:
             finished_at=None,
             updated_at=now,
         )
-        self.task_repository.create_task(task)
-
-        self.outbox_repository.enqueue_command(
+        await self.task_repository.create_task(task)
+        await self.outbox_repository.enqueue_command(
             topic="instance.start",
             payload={
                 "instance_id": str(command.instance_id),
@@ -422,7 +408,6 @@ class StartInstanceHandler:
             request_id=request_id,
             max_attempts=self.outbox_max_attempts,
         )
-
         return TaskAccepted(
             task_id=task_id,
             instance_id=command.instance_id,
@@ -458,23 +443,27 @@ class UpdateInstanceHandler:
         self.accounting = accounting
         self.quota_accounting = quota_accounting
 
-    def handle(self, command: UpdateInstanceCommand) -> TaskAccepted:
-        instance = self.write_repository.get_for_update(command.instance_id)
+    async def handle(self, command: UpdateInstanceCommand) -> TaskAccepted:
+        instance = await self.write_repository.get_for_update(command.instance_id)
         if not instance:
             raise NotFoundError(f"instance {command.instance_id} not found")
         if instance.status == "deleted":
             raise ValidationError("cannot update a deleted instance")
-        if self.task_repository.has_active_task(command.instance_id):
-            raise ConflictError(f"instance {command.instance_id} already has an active task")
-
-        next_spec = ResourceSpec(cpu=command.cpu, memory_mib=command.memory_mib, disk_gib=command.disk_gib)
+        if await self.task_repository.has_active_task(command.instance_id):
+            raise ConflictError(
+                f"instance {command.instance_id} already has an active task"
+            )
+        next_spec = ResourceSpec(
+            cpu=command.cpu, memory_mib=command.memory_mib, disk_gib=command.disk_gib
+        )
         next_spec.validate()
-        current_profile = self._profile_for_instance(instance.status, instance.reserve_resources)
+        current_profile = self._profile_for_instance(
+            instance.status, instance.reserve_resources
+        )
         requested_profile = "stopped" if instance.status == "stopped" else "running"
         boot_after_update = instance.status != "stopped"
-
         if self.quota_accounting is not None:
-            self.quota_accounting.assert_quota(
+            await self.quota_accounting.assert_quota(
                 TenantQuotaCheckInput(
                     tenant_id=instance.tenant_id,
                     current=instance.resource_spec,
@@ -483,8 +472,7 @@ class UpdateInstanceHandler:
                     requested_profile=requested_profile,
                 )
             )
-
-        self.accounting.assert_capacity(
+        await self.accounting.assert_capacity(
             CapacityCheckInput(
                 host_node=command.host_node,
                 current=instance.resource_spec,
@@ -493,12 +481,10 @@ class UpdateInstanceHandler:
                 requested_profile=requested_profile,
             )
         )
-
         task_id = uuid4()
         request_id = uuid4()
         now = datetime.now(timezone.utc)
-
-        self.write_repository.update_spec(
+        await self.write_repository.update_spec(
             command.instance_id,
             spec=next_spec,
             status="updating_pending",
@@ -507,7 +493,6 @@ class UpdateInstanceHandler:
             last_task_id=task_id,
             deleted_at=instance.deleted_at,
         )
-
         task = InstanceTask(
             id=task_id,
             instance_id=command.instance_id,
@@ -527,7 +512,9 @@ class UpdateInstanceHandler:
                     "disk_gib": instance.resource_spec.disk_gib,
                 },
                 "previous_ip_address": instance.ip_address,
-                "previous_deleted_at": instance.deleted_at.isoformat() if instance.deleted_at else None,
+                "previous_deleted_at": instance.deleted_at.isoformat()
+                if instance.deleted_at
+                else None,
                 "previous_status": instance.status,
                 "previous_reserve_resources": instance.reserve_resources,
             },
@@ -541,9 +528,8 @@ class UpdateInstanceHandler:
             finished_at=None,
             updated_at=now,
         )
-        self.task_repository.create_task(task)
-
-        self.outbox_repository.enqueue_command(
+        await self.task_repository.create_task(task)
+        await self.outbox_repository.enqueue_command(
             topic="instance.update",
             payload={
                 "instance_id": str(command.instance_id),
@@ -557,7 +543,6 @@ class UpdateInstanceHandler:
             request_id=request_id,
             max_attempts=self.outbox_max_attempts,
         )
-
         return TaskAccepted(
             task_id=task_id,
             instance_id=command.instance_id,

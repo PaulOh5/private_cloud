@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from uuid import UUID
-
 from app.domain.models import AuditLog
 from app.ports import AuditLogRepository
 
@@ -28,8 +26,8 @@ class ListAuditLogsHandler:
     def __init__(self, audit_log_repository: AuditLogRepository):
         self.audit_log_repository = audit_log_repository
 
-    def handle(self, query: ListAuditLogsQuery) -> ListAuditLogsResult:
-        items, total = self.audit_log_repository.list(
+    async def handle(self, query: ListAuditLogsQuery) -> ListAuditLogsResult:
+        items, total = await self.audit_log_repository.list(
             limit=query.limit,
             offset=query.offset,
             actor_user_id=query.actor_user_id,

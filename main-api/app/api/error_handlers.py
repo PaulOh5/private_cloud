@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from app.domain.errors import DomainError
 
 ERROR_STATUS_MAPPING = {
+    "FORBIDDEN": 403,
     "VALIDATION_ERROR": 400,
     "CAPACITY_EXCEEDED": 409,
     "QUOTA_EXCEEDED": 409,

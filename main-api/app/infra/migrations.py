@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import Engine, text
+from alembic import command
+from alembic.config import Config
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from app.config import Settings
 
 
-def apply_sql_schema(engine: Engine) -> None:
-    schema_file = Path(__file__).resolve().parents[2] / "migrations" / "001_init.sql"
-    sql = schema_file.read_text(encoding="utf-8")
-    with engine.begin() as conn:
-        conn.execute(text(sql))
-
-
-def apply_schema(engine: Engine) -> None:
-    apply_sql_schema(engine)
+async def apply_schema(engine: AsyncEngine, settings: Settings) -> None:
+    del engine
+    repo_root = Path(__file__).resolve().parents[2]
+    cfg = Config(str(repo_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(repo_root / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", settings.postgres_sync_dsn)
+    command.upgrade(cfg, "head")

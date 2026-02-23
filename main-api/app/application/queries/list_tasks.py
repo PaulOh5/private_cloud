@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from uuid import UUID
-
 from app.domain.models import InstanceTask, TaskCommand, TaskStatus
 from app.ports import TaskRepository
 
@@ -25,8 +24,8 @@ class ListTasksHandler:
     def __init__(self, task_repository: TaskRepository):
         self.task_repository = task_repository
 
-    def handle(self, query: ListTasksQuery) -> ListTasksResult:
-        items, total = self.task_repository.list(
+    async def handle(self, query: ListTasksQuery) -> ListTasksResult:
+        items, total = await self.task_repository.list(
             limit=query.limit,
             offset=query.offset,
             status=query.status,

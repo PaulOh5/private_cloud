@@ -8,45 +8,53 @@ from app.domain.models import Tenant, TenantQuota, TenantUsage
 
 class TenantRepository(ABC):
     @abstractmethod
-    def create(self, *, key: str, name: str, is_active: bool = True) -> Tenant:
+    async def create(self, *, key: str, name: str, is_active: bool = True) -> Tenant:
         raise NotImplementedError
 
     @abstractmethod
-    def get(self, tenant_id: UUID) -> Tenant | None:
+    async def get(self, tenant_id: UUID) -> Tenant | None:
         raise NotImplementedError
 
     @abstractmethod
-    def get_by_key(self, key: str) -> Tenant | None:
+    async def is_active(self, tenant_id: UUID) -> bool | None:
         raise NotImplementedError
 
     @abstractmethod
-    def list(self, *, limit: int, offset: int, is_active: bool | None) -> tuple[list[Tenant], int]:
+    async def get_by_key(self, key: str) -> Tenant | None:
         raise NotImplementedError
 
     @abstractmethod
-    def update(self, tenant_id: UUID, *, name: str | None = None, is_active: bool | None = None) -> Tenant:
+    async def list(
+        self, *, limit: int, offset: int, is_active: bool | None
+    ) -> tuple[list[Tenant], int]:
         raise NotImplementedError
 
     @abstractmethod
-    def delete(self, tenant_id: UUID) -> None:
+    async def update(
+        self, tenant_id: UUID, *, name: str | None = None, is_active: bool | None = None
+    ) -> Tenant:
         raise NotImplementedError
 
     @abstractmethod
-    def count_active_users(self, tenant_id: UUID) -> int:
+    async def delete(self, tenant_id: UUID) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def count_active_instances(self, tenant_id: UUID) -> int:
+    async def count_active_users(self, tenant_id: UUID) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_active_instances(self, tenant_id: UUID) -> int:
         raise NotImplementedError
 
 
 class TenantQuotaRepository(ABC):
     @abstractmethod
-    def get(self, tenant_id: UUID) -> TenantQuota | None:
+    async def get(self, tenant_id: UUID) -> TenantQuota | None:
         raise NotImplementedError
 
     @abstractmethod
-    def upsert(
+    async def upsert(
         self,
         tenant_id: UUID,
         *,
@@ -60,5 +68,5 @@ class TenantQuotaRepository(ABC):
 
 class TenantUsageReadPort(ABC):
     @abstractmethod
-    def get_usage(self, tenant_id: UUID) -> TenantUsage:
+    async def get_usage(self, tenant_id: UUID) -> TenantUsage:
         raise NotImplementedError

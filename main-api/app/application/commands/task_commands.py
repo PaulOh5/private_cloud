@@ -1,11 +1,12 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
-
 from app.application.commands.common import TaskAccepted
-from app.application.services.task_instance_state import apply_pending_instance_state, revert_instance_state_on_terminal_failure
+from app.application.services.task_instance_state import (
+    apply_pending_instance_state,
+    revert_instance_state_on_terminal_failure,
+)
 from app.domain.errors import ConflictError, NotFoundError, ValidationError
 from app.domain.models import ResourceSpec
 from app.ports import (
@@ -39,24 +40,22 @@ class CancelTaskHandler:
         self.outbox_repository = outbox_repository
         self.outbox_max_attempts = max(1, int(outbox_max_attempts))
 
-    def handle(self, command: CancelTaskCommand) -> TaskAccepted:
-        task = self.task_repository.get_for_update(command.task_id)
+    async def handle(self, command: CancelTaskCommand) -> TaskAccepted:
+        task = await self.task_repository.get_for_update(command.task_id)
         if not task:
             raise NotFoundError(f"task {command.task_id} not found")
-
-        instance = self.write_repository.get_for_update(task.instance_id)
+        instance = await self.write_repository.get_for_update(task.instance_id)
         if not instance:
             raise NotFoundError(f"instance {task.instance_id} not found")
-
         now = datetime.now(timezone.utc)
         if task.status == "queued":
-            revert_instance_state_on_terminal_failure(
+            await revert_instance_state_on_terminal_failure(
                 instance_repo=self.write_repository,
                 instance_id=instance.id,
                 command=task.command,
                 request_payload=task.request_payload,
             )
-            canceled = self.task_repository.mark_canceled(
+            canceled = await self.task_repository.mark_canceled(
                 task_id=task.id,
                 attempt_count=task.attempt_count,
                 canceled_by=command.actor_user_id,
@@ -72,14 +71,13 @@ class CancelTaskHandler:
                 status=canceled.status,
                 accepted_at=now,
             )
-
         if task.status == "running":
-            cancel_pending = self.task_repository.mark_cancel_pending(
+            cancel_pending = await self.task_repository.mark_cancel_pending(
                 task_id=task.id,
                 canceled_by=command.actor_user_id,
                 cancel_reason=command.reason,
             )
-            self.outbox_repository.enqueue_command(
+            await self.outbox_repository.enqueue_command(
                 topic="instance.cancel",
                 payload={
                     "instance_id": str(instance.id),
@@ -98,7 +96,6 @@ class CancelTaskHandler:
                 status=cancel_pending.status,
                 accepted_at=now,
             )
-
         if task.status in {"cancel_pending", "canceled"}:
             return TaskAccepted(
                 task_id=task.id,
@@ -107,8 +104,9 @@ class CancelTaskHandler:
                 status=task.status,
                 accepted_at=now,
             )
-
-        raise ConflictError(f"task {task.id} cannot be canceled from status {task.status}")
+        raise ConflictError(
+            f"task {task.id} cannot be canceled from status {task.status}"
+        )
 
 
 @dataclass(frozen=True)
@@ -133,27 +131,35 @@ class RetryTaskHandler:
         self.accounting = accounting
         self.quota_accounting = quota_accounting
 
-    def handle(self, command: RetryTaskCommand) -> TaskAccepted:
-        source_task = self.task_repository.get_for_update(command.task_id)
+    async def handle(self, command: RetryTaskCommand) -> TaskAccepted:
+        source_task = await self.task_repository.get_for_update(command.task_id)
         if not source_task:
             raise NotFoundError(f"task {command.task_id} not found")
         if source_task.status not in {"failed", "canceled"}:
             raise ValidationError("only failed or canceled tasks can be retried")
-
-        instance = self.write_repository.get_for_update(source_task.instance_id)
+        instance = await self.write_repository.get_for_update(source_task.instance_id)
         if not instance:
             raise NotFoundError(f"instance {source_task.instance_id} not found")
         if instance.status == "deleted":
             raise ValidationError("cannot retry task for a deleted instance")
-        if self.task_repository.has_active_task(instance.id):
+        if await self.task_repository.has_active_task(instance.id):
             raise ConflictError(f"instance {instance.id} already has an active task")
-
-        host_node = str(source_task.request_payload.get("host_node") or instance.host_node)
+        host_node = str(
+            source_task.request_payload.get("host_node") or instance.host_node
+        )
         requested = self._requested_spec(source_task, instance.resource_spec)
-        current_profile = self._profile_for_instance(instance.status, instance.reserve_resources)
-        requested_profile = self._requested_profile(source_task.command, source_task.request_payload)
-        if self.quota_accounting is not None and source_task.command in {"create", "update", "start"}:
-            self.quota_accounting.assert_quota(
+        current_profile = self._profile_for_instance(
+            instance.status, instance.reserve_resources
+        )
+        requested_profile = self._requested_profile(
+            source_task.command, source_task.request_payload
+        )
+        if self.quota_accounting is not None and source_task.command in {
+            "create",
+            "update",
+            "start",
+        }:
+            await self.quota_accounting.assert_quota(
                 TenantQuotaCheckInput(
                     tenant_id=instance.tenant_id,
                     current=instance.resource_spec,
@@ -163,7 +169,7 @@ class RetryTaskHandler:
                 )
             )
         if source_task.command in {"create", "update", "start"}:
-            self.accounting.assert_capacity(
+            await self.accounting.assert_capacity(
                 CapacityCheckInput(
                     host_node=host_node,
                     current=instance.resource_spec,
@@ -172,26 +178,23 @@ class RetryTaskHandler:
                     requested_profile=requested_profile,
                 )
             )
-
         now = datetime.now(timezone.utc)
         new_task_id = uuid4()
         new_request_id = uuid4()
-
-        apply_pending_instance_state(
+        await apply_pending_instance_state(
             instance_repo=self.write_repository,
             instance=instance,
             command=source_task.command,
             request_payload=source_task.request_payload,
             task_id=new_task_id,
         )
-        cloned = self.task_repository.clone_for_retry(
+        cloned = await self.task_repository.clone_for_retry(
             source_task=source_task,
             new_task_id=new_task_id,
             new_request_id=new_request_id,
             created_at=now,
         )
-
-        self.outbox_repository.enqueue_command(
+        await self.outbox_repository.enqueue_command(
             topic=f"instance.{source_task.command}",
             payload=self._command_payload(
                 command=source_task.command,
@@ -203,7 +206,6 @@ class RetryTaskHandler:
             request_id=new_request_id,
             max_attempts=self.outbox_max_attempts,
         )
-
         return TaskAccepted(
             task_id=cloned.id,
             instance_id=cloned.instance_id,
@@ -230,7 +232,9 @@ class RetryTaskHandler:
     def _requested_profile(self, command: str, request_payload: dict) -> str:
         if command == "stop":
             return "stopped"
-        if command == "update" and not bool(request_payload.get("boot_after_update", True)):
+        if command == "update" and not bool(
+            request_payload.get("boot_after_update", True)
+        ):
             return "stopped"
         if command in {"create", "update", "start"}:
             return "running"
@@ -257,7 +261,6 @@ class RetryTaskHandler:
             if image_id:
                 payload["image_id"] = str(image_id)
             return payload
-
         if command == "update":
             payload = {
                 "instance_id": str(instance_id),
@@ -266,9 +269,10 @@ class RetryTaskHandler:
                 "disk_gib": int(request_payload.get("disk_gib")),
                 "host_node": host_node,
             }
-            payload["boot_after_update"] = bool(request_payload.get("boot_after_update", True))
+            payload["boot_after_update"] = bool(
+                request_payload.get("boot_after_update", True)
+            )
             return payload
-
         return {
             "instance_id": str(instance_id),
             "host_node": host_node,

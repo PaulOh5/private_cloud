@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-from uuid import UUID
-
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-
 from app.api.schemas import InstanceResponse, TaskResponse
 
 
@@ -41,20 +36,3 @@ def to_task_response(task) -> TaskResponse:
         finished_at=task.finished_at,
         updated_at=task.updated_at,
     )
-
-
-def get_task_tenant_id(session: Session, task_id: UUID) -> UUID | None:
-    row = session.execute(
-        text(
-            """
-            SELECT i.tenant_id
-            FROM instance_tasks t
-            JOIN instances i ON i.id = t.instance_id
-            WHERE t.id = :task_id
-            """
-        ),
-        {"task_id": str(task_id)},
-    ).mappings().first()
-    if not row:
-        return None
-    return row["tenant_id"]

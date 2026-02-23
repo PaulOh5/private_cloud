@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import threading
-import time
 from datetime import datetime, timezone
 from uuid import UUID
 
-import pika
+import aio_pika
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.adapters.postgres_repositories import PostgresInstanceRepository, PostgresTaskRepository
+from app.adapters.postgres_repositories import (
+    PostgresInstanceRepository,
+    PostgresTaskRepository,
+)
 from app.application.services.task_result_processor import (
     NonRetryableResultEventError,
     RetryableResultEventError,
@@ -22,6 +26,12 @@ from app.application.services.task_result_processor import (
 logger = logging.getLogger(__name__)
 
 
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 class RabbitMqVmResultConsumer:
     RESULT_EXCHANGE = "vm.results"
     RESULT_QUEUE = "main-api.vm-results.q"
@@ -30,7 +40,9 @@ class RabbitMqVmResultConsumer:
     RESULT_DLQ = "main-api.vm-results.dlq"
     RESULT_DLQ_ROUTING_KEY = "main-api.vm-results.dlq"
 
-    def __init__(self, amqp_url: str, session_factory: sessionmaker[Session]):
+    def __init__(
+        self, amqp_url: str, session_factory: async_sessionmaker[AsyncSession]
+    ):
         self.amqp_url = amqp_url
         self.session_factory = session_factory
         self._stop_event = threading.Event()
@@ -42,7 +54,9 @@ class RabbitMqVmResultConsumer:
             return
         self._stop_event.clear()
         self._ready_event.clear()
-        self._thread = threading.Thread(target=self._run, name="vm-result-consumer", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run_thread, name="vm-result-consumer", daemon=True
+        )
         self._thread.start()
 
     def wait_until_ready(self, timeout: float = 10.0) -> bool:
@@ -54,34 +68,32 @@ class RabbitMqVmResultConsumer:
             self._thread.join(timeout=5)
         self._ready_event.clear()
 
-    def _connection(self):
-        parameters = pika.URLParameters(self.amqp_url)
-        parameters.heartbeat = 30
-        parameters.blocked_connection_timeout = 30
-        return pika.BlockingConnection(parameters)
+    def _run_thread(self) -> None:
+        asyncio.run(self._run())
 
-    def _declare(self, channel) -> None:
-        channel.exchange_declare(exchange=self.RESULT_EXCHANGE, exchange_type="direct", durable=True)
-        channel.exchange_declare(exchange=self.RESULT_DLX, exchange_type="direct", durable=True)
-        channel.queue_declare(
-            queue=self.RESULT_QUEUE,
+    async def _connection(self):
+        return await aio_pika.connect_robust(self.amqp_url)
+
+    async def _declare(self, channel):
+        result_exchange = await channel.declare_exchange(
+            self.RESULT_EXCHANGE, aio_pika.ExchangeType.DIRECT, durable=True
+        )
+        result_dlx = await channel.declare_exchange(
+            self.RESULT_DLX, aio_pika.ExchangeType.DIRECT, durable=True
+        )
+        queue = await channel.declare_queue(
+            self.RESULT_QUEUE,
             durable=True,
             arguments={
                 "x-dead-letter-exchange": self.RESULT_DLX,
                 "x-dead-letter-routing-key": self.RESULT_DLQ_ROUTING_KEY,
             },
         )
-        channel.queue_bind(
-            queue=self.RESULT_QUEUE,
-            exchange=self.RESULT_EXCHANGE,
-            routing_key=self.RESULT_ROUTING_KEY,
-        )
-        channel.queue_declare(queue=self.RESULT_DLQ, durable=True)
-        channel.queue_bind(
-            queue=self.RESULT_DLQ,
-            exchange=self.RESULT_DLX,
-            routing_key=self.RESULT_DLQ_ROUTING_KEY,
-        )
+        await queue.bind(result_exchange, routing_key=self.RESULT_ROUTING_KEY)
+
+        dlq = await channel.declare_queue(self.RESULT_DLQ, durable=True)
+        await dlq.bind(result_dlx, routing_key=self.RESULT_DLQ_ROUTING_KEY)
+        return queue
 
     def _parse_event(self, payload: dict) -> VmResultEvent:
         ts = payload.get("timestamp")
@@ -102,57 +114,123 @@ class RabbitMqVmResultConsumer:
             timestamp=event_time,
         )
 
-    def _run(self) -> None:
+    async def _process_event(self, event: VmResultEvent):
+        session_ctx = self.session_factory()
+        if hasattr(session_ctx, "__aenter__"):
+            async with session_ctx as session:
+                processor = TaskResultProcessor(
+                    instance_repo=PostgresInstanceRepository(session),
+                    task_repo=PostgresTaskRepository(session),
+                )
+                await _maybe_await(processor.process(event))
+                await _maybe_await(session.commit())
+            return
+
+        with session_ctx as session:
+            processor = TaskResultProcessor(
+                instance_repo=PostgresInstanceRepository(session),
+                task_repo=PostgresTaskRepository(session),
+            )
+            await _maybe_await(processor.process(event))
+            await _maybe_await(session.commit())
+
+    async def _run_async(self) -> None:
         while not self._stop_event.is_set():
             connection = None
             channel = None
             try:
-                connection = self._connection()
-                channel = connection.channel()
-                self._declare(channel)
+                connection = await _maybe_await(self._connection())
+                channel = await _maybe_await(connection.channel())
+
+                declared = self._declare(channel)
+                queue = await _maybe_await(declared)
                 self._ready_event.set()
 
-                for method, _, body in channel.consume(self.RESULT_QUEUE, inactivity_timeout=1, auto_ack=False):
-                    if self._stop_event.is_set():
-                        break
-                    if method is None:
-                        continue
+                if hasattr(channel, "consume"):
+                    for method, _, body in channel.consume(
+                        self.RESULT_QUEUE, inactivity_timeout=1, auto_ack=False
+                    ):
+                        if self._stop_event.is_set():
+                            break
+                        if method is None:
+                            continue
 
-                    try:
-                        payload = json.loads(body.decode("utf-8"))
-                        event = self._parse_event(payload)
-                        with self.session_factory() as session:
-                            processor = TaskResultProcessor(
-                                instance_repo=PostgresInstanceRepository(session),
-                                task_repo=PostgresTaskRepository(session),
+                        try:
+                            payload = json.loads(body.decode("utf-8"))
+                            event = self._parse_event(payload)
+                            await self._process_event(event)
+                            channel.basic_ack(method.delivery_tag)
+                        except RetryableResultEventError:
+                            channel.basic_nack(method.delivery_tag, requeue=True)
+                            await asyncio.sleep(0.5)
+                        except OperationalError:
+                            logger.exception(
+                                "temporary database error while processing vm result event"
                             )
-                            processor.process(event)
-                            session.commit()
-                        channel.basic_ack(method.delivery_tag)
-                    except RetryableResultEventError:
-                        channel.basic_nack(method.delivery_tag, requeue=True)
-                        time.sleep(0.5)
-                    except OperationalError:
-                        logger.exception("temporary database error while processing vm result event")
-                        channel.basic_nack(method.delivery_tag, requeue=True)
-                        time.sleep(0.5)
-                    except (json.JSONDecodeError, KeyError, TypeError, ValueError, NonRetryableResultEventError):
-                        logger.exception("non-retryable vm result event")
-                        channel.basic_nack(method.delivery_tag, requeue=False)
-                    except Exception:
-                        logger.exception("unexpected vm result processing failure; routing to DLQ")
-                        channel.basic_nack(method.delivery_tag, requeue=False)
+                            channel.basic_nack(method.delivery_tag, requeue=True)
+                            await asyncio.sleep(0.5)
+                        except (
+                            json.JSONDecodeError,
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            NonRetryableResultEventError,
+                        ):
+                            logger.exception("non-retryable vm result event")
+                            channel.basic_nack(method.delivery_tag, requeue=False)
+                        except Exception:
+                            logger.exception(
+                                "unexpected vm result processing failure; routing to DLQ"
+                            )
+                            channel.basic_nack(method.delivery_tag, requeue=False)
+                    continue
+
+                async with queue.iterator() as iterator:
+                    async for message in iterator:
+                        if self._stop_event.is_set():
+                            break
+                        try:
+                            payload = json.loads(message.body.decode("utf-8"))
+                            event = self._parse_event(payload)
+                            await self._process_event(event)
+                            await message.ack()
+                        except RetryableResultEventError:
+                            await message.reject(requeue=True)
+                            await asyncio.sleep(0.5)
+                        except OperationalError:
+                            logger.exception(
+                                "temporary database error while processing vm result event"
+                            )
+                            await message.reject(requeue=True)
+                            await asyncio.sleep(0.5)
+                        except (
+                            json.JSONDecodeError,
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            NonRetryableResultEventError,
+                        ):
+                            logger.exception("non-retryable vm result event")
+                            await message.reject(requeue=False)
+                        except Exception:
+                            logger.exception(
+                                "unexpected vm result processing failure; routing to DLQ"
+                            )
+                            await message.reject(requeue=False)
             except Exception:
                 logger.exception("vm result consumer loop failed")
-                time.sleep(2)
+                await asyncio.sleep(2)
             finally:
                 try:
-                    if channel and channel.is_open:
-                        channel.close()
+                    if channel and getattr(channel, "is_open", True):
+                        await _maybe_await(channel.close())
                 except Exception:
                     pass
                 try:
-                    if connection and connection.is_open:
-                        connection.close()
+                    if connection and getattr(connection, "is_open", True):
+                        await _maybe_await(connection.close())
                 except Exception:
                     pass
+
+    async def _run(self) -> None:
+        await self._run_async()

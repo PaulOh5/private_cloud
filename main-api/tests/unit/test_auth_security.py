@@ -35,7 +35,9 @@ def test_access_token_roundtrip():
     )
     assert expires_at.tzinfo is not None
 
-    payload = decode_access_token(token=token, secret="test-secret", algorithms=["HS256"])
+    payload = decode_access_token(
+        token=token, secret="test-secret", algorithms=["HS256"]
+    )
     assert payload["sub"] == str(user_id)
     assert payload["username"] == "alice"
     assert payload["role"] == "admin"
@@ -69,7 +71,9 @@ def test_refresh_token_roundtrip_and_hash():
     )
     assert expires_at.tzinfo is not None
 
-    payload = decode_refresh_token(token=refresh_token, secret="test-secret", algorithms=["HS256"])
+    payload = decode_refresh_token(
+        token=refresh_token, secret="test-secret", algorithms=["HS256"]
+    )
     assert payload["sub"] == str(user_id)
     assert payload["type"] == "refresh"
     assert payload.get("jti")

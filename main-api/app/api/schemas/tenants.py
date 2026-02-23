@@ -31,7 +31,9 @@ class ListTenantsResponse(BaseModel):
 
 
 class CreateTenantRequest(BaseModel):
-    key: str = Field(min_length=2, max_length=64, pattern=r"^[a-z0-9][a-z0-9._-]{1,63}$")
+    key: str = Field(
+        min_length=2, max_length=64, pattern=r"^[a-z0-9][a-z0-9._-]{1,63}$"
+    )
     name: str = Field(min_length=1, max_length=128)
     is_active: bool = True
     max_instances: int = Field(gt=0)

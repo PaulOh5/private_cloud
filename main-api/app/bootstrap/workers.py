@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.adapters.rabbitmq_rpc import RabbitMqVmProvisioningAdapter
 from app.config import Settings
@@ -12,7 +12,7 @@ from app.runtime.workers.stale_task_monitor import StaleTaskMonitor
 
 def build_worker_specs(
     settings: Settings,
-    session_factory: sessionmaker[Session],
+    session_factory: async_sessionmaker[AsyncSession],
     vm_publisher: RabbitMqVmProvisioningAdapter,
 ) -> list[WorkerSpec]:
     worker_specs: list[WorkerSpec] = [
@@ -30,7 +30,6 @@ def build_worker_specs(
                 worker=OutboxRelay(
                     session_factory=session_factory,
                     provisioning=vm_publisher,
-                    postgres_listener_dsn=settings.postgres_listener_dsn,
                     notify_channel=settings.outbox_notify_channel,
                     poll_interval_seconds=settings.outbox_poll_interval_seconds,
                     batch_size=settings.outbox_batch_size,
@@ -55,7 +54,9 @@ def build_worker_specs(
 
 def build_worker_lifecycle(
     settings: Settings,
-    session_factory: sessionmaker[Session],
+    session_factory: async_sessionmaker[AsyncSession],
 ) -> WorkerLifecycleManager:
     vm_publisher = RabbitMqVmProvisioningAdapter(settings.rabbitmq_dsn)
-    return WorkerLifecycleManager(build_worker_specs(settings, session_factory, vm_publisher))
+    return WorkerLifecycleManager(
+        build_worker_specs(settings, session_factory, vm_publisher)
+    )

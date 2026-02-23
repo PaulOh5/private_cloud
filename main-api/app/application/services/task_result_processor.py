@@ -1,10 +1,10 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
-
-from app.application.services.task_instance_state import revert_instance_state_on_terminal_failure
+from app.application.services.task_instance_state import (
+    revert_instance_state_on_terminal_failure,
+)
 from app.domain.errors import NotFoundError
 from app.ports import InstanceRepository, TaskRepository
 
@@ -36,32 +36,31 @@ class TaskResultProcessor:
         self.instance_repo = instance_repo
         self.task_repo = task_repo
 
-    def process(self, event: VmResultEvent) -> None:
+    async def process(self, event: VmResultEvent) -> None:
         if event.status not in {"running", "succeeded", "failed", "canceled"}:
-            raise NonRetryableResultEventError(f"unsupported task result status: {event.status}")
-
-        task = self.task_repo.get_for_update(event.task_id)
+            raise NonRetryableResultEventError(
+                f"unsupported task result status: {event.status}"
+            )
+        task = await self.task_repo.get_for_update(event.task_id)
         if not task:
             now = datetime.now(timezone.utc)
             if (now - event.timestamp).total_seconds() < 60:
                 raise RetryableResultEventError(f"task {event.task_id} not yet visible")
             return
-
         if task.status in {"succeeded", "failed", "canceled"}:
             return
-
-        instance = self.instance_repo.get_for_update(task.instance_id)
+        instance = await self.instance_repo.get_for_update(task.instance_id)
         if not instance:
             raise NotFoundError(f"instance {task.instance_id} not found")
-
         if event.status == "running":
             if task.status != "cancel_pending":
-                self.task_repo.mark_running(task.id, max(event.attempt_count, 1))
+                await self.task_repo.mark_running(task.id, max(event.attempt_count, 1))
             return
-
         if event.status == "succeeded":
-            self._handle_success(task.command, task.request_payload, instance.id, event)
-            self.task_repo.mark_terminal(
+            await self._handle_success(
+                task.command, task.request_payload, instance.id, event
+            )
+            await self.task_repo.mark_terminal(
                 task.id,
                 status="succeeded",
                 attempt_count=max(event.attempt_count, 1),
@@ -70,15 +69,14 @@ class TaskResultProcessor:
                 error_message=None,
             )
             return
-
         if event.status == "canceled":
-            revert_instance_state_on_terminal_failure(
+            await revert_instance_state_on_terminal_failure(
                 instance_repo=self.instance_repo,
                 instance_id=instance.id,
                 command=task.command,
                 request_payload=task.request_payload,
             )
-            self.task_repo.mark_canceled(
+            await self.task_repo.mark_canceled(
                 task.id,
                 attempt_count=max(event.attempt_count, task.attempt_count),
                 canceled_by=None,
@@ -88,14 +86,13 @@ class TaskResultProcessor:
                 error_message=event.error_message or "task canceled",
             )
             return
-
-        revert_instance_state_on_terminal_failure(
+        await revert_instance_state_on_terminal_failure(
             instance_repo=self.instance_repo,
             instance_id=instance.id,
             command=task.command,
             request_payload=task.request_payload,
         )
-        self.task_repo.mark_terminal(
+        await self.task_repo.mark_terminal(
             task.id,
             status="failed",
             attempt_count=max(event.attempt_count, 1),
@@ -104,10 +101,16 @@ class TaskResultProcessor:
             error_message=event.error_message,
         )
 
-    def _handle_success(self, command: str, request_payload: dict, instance_id: UUID, event: VmResultEvent) -> None:
+    async def _handle_success(
+        self,
+        command: str,
+        request_payload: dict,
+        instance_id: UUID,
+        event: VmResultEvent,
+    ) -> None:
         if command == "create":
             ip_address = (event.result or {}).get("ip_address")
-            self.instance_repo.update_state(
+            await self.instance_repo.update_state(
                 instance_id,
                 status="running",
                 reserve_resources=True,
@@ -116,12 +119,13 @@ class TaskResultProcessor:
                 ip_address=ip_address,
             )
             return
-
         if command == "update":
             result = event.result or {}
             final_status = result.get("status") or "running"
-            ip_address = result.get("ip_address") or request_payload.get("previous_ip_address")
-            self.instance_repo.update_state(
+            ip_address = result.get("ip_address") or request_payload.get(
+                "previous_ip_address"
+            )
+            await self.instance_repo.update_state(
                 instance_id,
                 status=final_status,
                 reserve_resources=True,
@@ -130,31 +134,30 @@ class TaskResultProcessor:
                 ip_address=ip_address,
             )
             return
-
         if command == "start":
-            self.instance_repo.update_state(
+            await self.instance_repo.update_state(
                 instance_id,
                 status="running",
                 reserve_resources=True,
                 last_task_id=event.task_id,
                 deleted_at=None,
-                ip_address=(event.result or {}).get("ip_address") or request_payload.get("previous_ip_address"),
+                ip_address=(event.result or {}).get("ip_address")
+                or request_payload.get("previous_ip_address"),
             )
             return
-
         if command == "stop":
-            self.instance_repo.update_state(
+            await self.instance_repo.update_state(
                 instance_id,
                 status="stopped",
                 reserve_resources=True,
                 last_task_id=event.task_id,
                 deleted_at=None,
-                ip_address=(event.result or {}).get("ip_address") or request_payload.get("previous_ip_address"),
+                ip_address=(event.result or {}).get("ip_address")
+                or request_payload.get("previous_ip_address"),
             )
             return
-
         if command == "delete":
-            self.instance_repo.update_state(
+            await self.instance_repo.update_state(
                 instance_id,
                 status="deleted",
                 reserve_resources=False,

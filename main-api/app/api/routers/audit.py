@@ -3,13 +3,16 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.postgres_repositories import PostgresAuditLogRepository
 from app.api.dependencies import get_session, require_roles
 from app.api.schemas import AuditLogResponse, ListAuditLogsResponse
 from app.application.queries.get_audit_log import GetAuditLogHandler
-from app.application.queries.list_audit_logs import ListAuditLogsHandler, ListAuditLogsQuery
+from app.application.queries.list_audit_logs import (
+    ListAuditLogsHandler,
+    ListAuditLogsQuery,
+)
 from app.domain.auth import User
 
 audit_router = APIRouter(prefix="/audit-logs", tags=["audit-logs"])
@@ -33,8 +36,8 @@ def _to_response(log) -> AuditLogResponse:
 
 
 @audit_router.get("", response_model=ListAuditLogsResponse)
-def list_audit_logs(
-    session: Session = Depends(get_session),
+async def list_audit_logs(
+    session: AsyncSession = Depends(get_session),
     _current_user: User = Depends(require_roles("admin")),
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -44,8 +47,10 @@ def list_audit_logs(
     request_id: UUID | None = Query(default=None),
     tenant_id: UUID | None = Query(default=None),
 ):
-    use_cases = ListAuditLogsHandler(audit_log_repository=PostgresAuditLogRepository(session))
-    result = use_cases.handle(
+    use_cases = ListAuditLogsHandler(
+        audit_log_repository=PostgresAuditLogRepository(session)
+    )
+    result = await use_cases.handle(
         ListAuditLogsQuery(
             limit=limit,
             offset=offset,
@@ -65,10 +70,12 @@ def list_audit_logs(
 
 
 @audit_router.get("/{log_id}", response_model=AuditLogResponse)
-def get_audit_log(
+async def get_audit_log(
     log_id: UUID,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     _current_user: User = Depends(require_roles("admin")),
 ):
-    use_cases = GetAuditLogHandler(audit_log_repository=PostgresAuditLogRepository(session))
-    return _to_response(use_cases.handle(log_id))
+    use_cases = GetAuditLogHandler(
+        audit_log_repository=PostgresAuditLogRepository(session)
+    )
+    return _to_response(await use_cases.handle(log_id))

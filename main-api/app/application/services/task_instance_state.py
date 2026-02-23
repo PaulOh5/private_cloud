@@ -7,7 +7,7 @@ from app.domain.models import Instance, ResourceSpec, TaskCommand
 from app.ports import InstanceRepository
 
 
-def apply_pending_instance_state(
+async def apply_pending_instance_state(
     instance_repo: InstanceRepository,
     instance: Instance,
     command: TaskCommand,
@@ -17,10 +17,14 @@ def apply_pending_instance_state(
     if command == "create":
         spec = ResourceSpec(
             cpu=int(request_payload.get("cpu", instance.resource_spec.cpu)),
-            memory_mib=int(request_payload.get("memory_mib", instance.resource_spec.memory_mib)),
-            disk_gib=int(request_payload.get("disk_gib", instance.resource_spec.disk_gib)),
+            memory_mib=int(
+                request_payload.get("memory_mib", instance.resource_spec.memory_mib)
+            ),
+            disk_gib=int(
+                request_payload.get("disk_gib", instance.resource_spec.disk_gib)
+            ),
         )
-        instance_repo.update_spec(
+        await instance_repo.update_spec(
             instance.id,
             spec=spec,
             status="creating_pending",
@@ -34,10 +38,14 @@ def apply_pending_instance_state(
     if command == "update":
         spec = ResourceSpec(
             cpu=int(request_payload.get("cpu", instance.resource_spec.cpu)),
-            memory_mib=int(request_payload.get("memory_mib", instance.resource_spec.memory_mib)),
-            disk_gib=int(request_payload.get("disk_gib", instance.resource_spec.disk_gib)),
+            memory_mib=int(
+                request_payload.get("memory_mib", instance.resource_spec.memory_mib)
+            ),
+            disk_gib=int(
+                request_payload.get("disk_gib", instance.resource_spec.disk_gib)
+            ),
         )
-        instance_repo.update_spec(
+        await instance_repo.update_spec(
             instance.id,
             spec=spec,
             status="updating_pending",
@@ -49,7 +57,7 @@ def apply_pending_instance_state(
         return
 
     if command == "start":
-        instance_repo.update_state(
+        await instance_repo.update_state(
             instance.id,
             status="starting_pending",
             reserve_resources=True,
@@ -60,7 +68,7 @@ def apply_pending_instance_state(
         return
 
     if command == "stop":
-        instance_repo.update_state(
+        await instance_repo.update_state(
             instance.id,
             status="stopping_pending",
             reserve_resources=True,
@@ -70,7 +78,7 @@ def apply_pending_instance_state(
         )
         return
 
-    instance_repo.update_state(
+    await instance_repo.update_state(
         instance.id,
         status="deleting_pending",
         reserve_resources=False,
@@ -80,14 +88,14 @@ def apply_pending_instance_state(
     )
 
 
-def revert_instance_state_on_terminal_failure(
+async def revert_instance_state_on_terminal_failure(
     instance_repo: InstanceRepository,
     instance_id: UUID,
     command: TaskCommand,
     request_payload: dict,
 ) -> None:
     if command == "create":
-        instance_repo.update_state(
+        await instance_repo.update_state(
             instance_id,
             status="error",
             reserve_resources=False,
@@ -105,7 +113,7 @@ def revert_instance_state_on_terminal_failure(
     )
 
     if command == "update":
-        instance_repo.update_spec(
+        await instance_repo.update_spec(
             instance_id,
             spec=spec,
             status="error",
@@ -117,10 +125,12 @@ def revert_instance_state_on_terminal_failure(
         return
 
     if command == "start":
-        instance_repo.update_state(
+        await instance_repo.update_state(
             instance_id,
             status=request_payload.get("previous_status") or "stopped",
-            reserve_resources=bool(request_payload.get("previous_reserve_resources", True)),
+            reserve_resources=bool(
+                request_payload.get("previous_reserve_resources", True)
+            ),
             last_task_id=None,
             deleted_at=None,
             ip_address=request_payload.get("previous_ip_address"),
@@ -128,17 +138,19 @@ def revert_instance_state_on_terminal_failure(
         return
 
     if command == "stop":
-        instance_repo.update_state(
+        await instance_repo.update_state(
             instance_id,
             status=request_payload.get("previous_status") or "running",
-            reserve_resources=bool(request_payload.get("previous_reserve_resources", True)),
+            reserve_resources=bool(
+                request_payload.get("previous_reserve_resources", True)
+            ),
             last_task_id=None,
             deleted_at=None,
             ip_address=request_payload.get("previous_ip_address"),
         )
         return
 
-    instance_repo.update_spec(
+    await instance_repo.update_spec(
         instance_id,
         spec=spec,
         status="error",

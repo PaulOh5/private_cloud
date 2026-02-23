@@ -1,12 +1,15 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime
-
 from app.application.services.audit_logger import AuditLogger
 from app.config import Settings
 from app.domain.auth import User
-from app.ports import RefreshTokenRepository, TenantRepository, UnitOfWork, UserRepository
+from app.ports import (
+    RefreshTokenRepository,
+    TenantRepository,
+    UnitOfWork,
+    UserRepository,
+)
 from app.security import (
     InvalidTokenError,
     create_access_token,
@@ -64,7 +67,7 @@ class _AuthCommandSupport:
         self.audit_logger = audit_logger
         self.uow = uow
 
-    def _issue_tokens(self, user: User) -> IssuedTokens:
+    async def _issue_tokens(self, user: User) -> IssuedTokens:
         access_token, access_expires_at = create_access_token(
             user_id=user.id,
             username=user.username,
@@ -81,7 +84,7 @@ class _AuthCommandSupport:
             algorithm=self.settings.auth_jwt_algorithm,
             expire_days=self.settings.auth_refresh_token_expire_days,
         )
-        self.refresh_token_repository.create(
+        await self.refresh_token_repository.create(
             user_id=user.id,
             token_hash=hash_token(refresh_token),
             expires_at=refresh_expires_at,
@@ -92,57 +95,54 @@ class _AuthCommandSupport:
             expires_at=access_expires_at,
         )
 
-    def _ensure_login_allowed(self, user: User) -> None:
+    async def _ensure_login_allowed(self, user: User) -> None:
         if user.role == "admin":
             return
         if user.tenant_id is None:
             raise AuthCommandError(403, "tenant is inactive")
-        tenant = self.tenant_repository.get(user.tenant_id)
+        tenant = await self.tenant_repository.get(user.tenant_id)
         if not tenant or not tenant.is_active:
             raise AuthCommandError(403, "tenant is inactive")
 
 
 class LoginHandler(_AuthCommandSupport):
-    def handle(self, command: LoginCommand) -> IssuedTokens:
-        user = self.user_repository.get_by_username(command.username)
+    async def handle(self, command: LoginCommand) -> IssuedTokens:
+        user = await self.user_repository.get_by_username(command.username)
         if not user or not verify_password(command.password, user.password_hash):
-            self.audit_logger.write(
+            await self.audit_logger.write(
                 action="auth.login.failed",
                 target_type="user",
                 target_id=command.username,
                 actor_username=command.username,
                 metadata={"reason": "invalid_credentials"},
             )
-            self.uow.commit()
+            await self.uow.commit()
             raise AuthCommandError(401, "invalid credentials")
-
         if not user.is_active:
-            self.audit_logger.write(
+            await self.audit_logger.write(
                 action="auth.login.failed",
                 target_type="user",
                 target_id=str(user.id),
                 actor_user=user,
                 metadata={"reason": "inactive_user"},
             )
-            self.uow.commit()
+            await self.uow.commit()
             raise AuthCommandError(403, "inactive user")
-
-        self._ensure_login_allowed(user)
-        tokens = self._issue_tokens(user)
-        self.audit_logger.write(
+        await self._ensure_login_allowed(user)
+        tokens = await self._issue_tokens(user)
+        await self.audit_logger.write(
             action="auth.login.succeeded",
             target_type="user",
             target_id=str(user.id),
             actor_user=user,
         )
-        self.uow.commit()
+        await self.uow.commit()
         return tokens
 
 
 class RefreshTokenHandler(_AuthCommandSupport):
-    def handle(self, command: RefreshTokenCommand) -> IssuedTokens:
+    async def handle(self, command: RefreshTokenCommand) -> IssuedTokens:
         token_hash = hash_token(command.refresh_token)
-
         try:
             payload = decode_refresh_token(
                 token=command.refresh_token,
@@ -150,71 +150,67 @@ class RefreshTokenHandler(_AuthCommandSupport):
                 algorithms=[self.settings.auth_jwt_algorithm],
             )
         except InvalidTokenError:
-            self.audit_logger.write(
+            await self.audit_logger.write(
                 action="auth.refresh.failed",
                 target_type="refresh_token",
                 target_id=None,
                 metadata={"reason": "invalid_refresh_token"},
             )
-            self.uow.commit()
+            await self.uow.commit()
             raise AuthCommandError(401, "invalid refresh token")
-
-        token_row = self.refresh_token_repository.get_active_by_hash(token_hash)
+        token_row = await self.refresh_token_repository.get_active_by_hash(token_hash)
         if not token_row:
-            self.audit_logger.write(
+            await self.audit_logger.write(
                 action="auth.refresh.failed",
                 target_type="refresh_token",
                 target_id=None,
                 metadata={"reason": "refresh_token_not_found_or_revoked"},
             )
-            self.uow.commit()
+            await self.uow.commit()
             raise AuthCommandError(401, "invalid refresh token")
-
-        user = self.user_repository.get_by_id(token_row.user_id)
+        user = await self.user_repository.get_by_id(token_row.user_id)
         if not user or not user.is_active:
-            self.audit_logger.write(
+            await self.audit_logger.write(
                 action="auth.refresh.failed",
                 target_type="user",
                 target_id=str(token_row.user_id),
                 metadata={"reason": "user_not_active"},
             )
-            self.uow.commit()
+            await self.uow.commit()
             raise AuthCommandError(401, "invalid refresh token")
-
-        self._ensure_login_allowed(user)
+        await self._ensure_login_allowed(user)
         if str(user.id) != str(payload.get("sub")):
-            self.audit_logger.write(
+            await self.audit_logger.write(
                 action="auth.refresh.failed",
                 target_type="refresh_token",
                 target_id=None,
                 actor_user=user,
                 metadata={"reason": "subject_mismatch"},
             )
-            self.uow.commit()
+            await self.uow.commit()
             raise AuthCommandError(401, "invalid refresh token")
-
-        self.refresh_token_repository.revoke_by_hash(token_hash)
-        tokens = self._issue_tokens(user)
-        self.audit_logger.write(
+        await self.refresh_token_repository.revoke_by_hash(token_hash)
+        tokens = await self._issue_tokens(user)
+        await self.audit_logger.write(
             action="auth.refresh.succeeded",
             target_type="user",
             target_id=str(user.id),
             actor_user=user,
         )
-        self.uow.commit()
+        await self.uow.commit()
         return tokens
 
 
 class LogoutHandler(_AuthCommandSupport):
-    def handle(self, command: LogoutCommand) -> None:
+    async def handle(self, command: LogoutCommand) -> None:
         token_hash = hash_token(command.refresh_token)
-        token_row = self.refresh_token_repository.get_active_by_hash(token_hash)
+        token_row = await self.refresh_token_repository.get_active_by_hash(token_hash)
         if token_row and token_row.user_id == command.current_user.id:
-            self.refresh_token_repository.revoke_by_hash(token_hash)
-        self.audit_logger.write(
+            await self.refresh_token_repository.revoke_by_hash(token_hash)
+        await self.audit_logger.write(
             action="auth.logout.succeeded",
             target_type="user",
             target_id=str(command.current_user.id),
             actor_user=command.current_user,
         )
-        self.uow.commit()
+        await self.uow.commit()
