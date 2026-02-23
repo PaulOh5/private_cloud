@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 
-def compute_console_vnc_port(instance_id: str, base: int = 20000, span: int = 40000) -> int:
+def compute_console_vnc_port(
+    instance_id: str, base: int = 20000, span: int = 40000
+) -> int:
     if base <= 0:
         base = 20000
     if span <= 0:

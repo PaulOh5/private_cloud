@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.postgres_repositories import (
     PostgresTenantQuotaRepository,
@@ -66,10 +66,10 @@ def _to_tenant_response(tenant, quota) -> TenantResponse:
 
 
 @tenant_router.post("", response_model=TenantResponse, status_code=201)
-def create_tenant(
+async def create_tenant(
     body: CreateTenantRequest,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("admin")),
 ):
@@ -80,7 +80,7 @@ def create_tenant(
         uow=uow,
     )
     try:
-        tenant, quota = handler.handle(
+        tenant, quota = await handler.handle(
             CreateTenantCommand(
                 key=body.key,
                 name=body.name,
@@ -93,13 +93,15 @@ def create_tenant(
             )
         )
     except ConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     return _to_tenant_response(tenant, quota)
 
 
 @tenant_router.get("", response_model=ListTenantsResponse)
-def list_tenants(
-    session: Session = Depends(get_session),
+async def list_tenants(
+    session: AsyncSession = Depends(get_session),
     _uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     _current_user: User = Depends(require_roles("admin")),
     limit: int = Query(default=20, ge=1, le=200),
@@ -110,7 +112,7 @@ def list_tenants(
         tenant_repository=PostgresTenantRepository(session),
         tenant_quota_repository=PostgresTenantQuotaRepository(session),
     )
-    result = handler.handle(
+    result = await handler.handle(
         ListTenantsQuery(
             limit=limit,
             offset=offset,
@@ -118,13 +120,15 @@ def list_tenants(
         )
     )
     responses = [_to_tenant_response(item.tenant, item.quota) for item in result.items]
-    return ListTenantsResponse(items=responses, total=result.total, limit=limit, offset=offset)
+    return ListTenantsResponse(
+        items=responses, total=result.total, limit=limit, offset=offset
+    )
 
 
 @tenant_router.get("/{tenant_id}", response_model=TenantResponse)
-def get_tenant(
+async def get_tenant(
     tenant_id: UUID,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     _uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     _current_user: User = Depends(require_roles("admin")),
 ):
@@ -133,18 +137,20 @@ def get_tenant(
         tenant_quota_repository=PostgresTenantQuotaRepository(session),
     )
     try:
-        detail = handler.handle(tenant_id)
+        detail = await handler.handle(tenant_id)
     except TenantNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
     return _to_tenant_response(detail.tenant, detail.quota)
 
 
 @tenant_router.patch("/{tenant_id}", response_model=TenantResponse)
-def update_tenant(
+async def update_tenant(
     tenant_id: UUID,
     body: UpdateTenantRequest,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("admin")),
 ):
@@ -155,7 +161,7 @@ def update_tenant(
         uow=uow,
     )
     try:
-        updated, quota = handler.handle(
+        updated, quota = await handler.handle(
             UpdateTenantCommand(
                 tenant_id=tenant_id,
                 name=body.name,
@@ -164,18 +170,22 @@ def update_tenant(
             )
         )
     except TenantNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
     except ConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     return _to_tenant_response(updated, quota)
 
 
 @tenant_router.patch("/{tenant_id}/quota", response_model=TenantQuotaResponse)
-def update_tenant_quota(
+async def update_tenant_quota(
     tenant_id: UUID,
     body: UpdateTenantQuotaRequest,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("admin")),
 ):
@@ -187,7 +197,7 @@ def update_tenant_quota(
         uow=uow,
     )
     try:
-        updated = handler.handle(
+        updated = await handler.handle(
             UpdateTenantQuotaCommand(
                 tenant_id=tenant_id,
                 max_instances=body.max_instances,
@@ -198,21 +208,25 @@ def update_tenant_quota(
             )
         )
     except TenantNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
     except QuotaConflictError:
         raise
     return _to_quota_response(updated)
 
 
 @tenant_router.get("/{tenant_id}/usage", response_model=TenantUsageResponse)
-def get_tenant_usage(
+async def get_tenant_usage(
     tenant_id: UUID,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     _uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     _current_user: User = Depends(require_roles("admin")),
 ):
-    handler = GetTenantUsageHandler(tenant_usage_read_port=PostgresTenantUsageReadRepository(session))
-    usage = handler.handle(tenant_id)
+    handler = GetTenantUsageHandler(
+        tenant_usage_read_port=PostgresTenantUsageReadRepository(session)
+    )
+    usage = await handler.handle(tenant_id)
     return TenantUsageResponse(
         tenant_id=usage.tenant_id,
         used_instances=usage.used_instances,
@@ -223,10 +237,10 @@ def get_tenant_usage(
 
 
 @tenant_router.delete("/{tenant_id}", status_code=204)
-def delete_tenant(
+async def delete_tenant(
     tenant_id: UUID,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("admin")),
 ):
@@ -236,9 +250,15 @@ def delete_tenant(
         uow=uow,
     )
     try:
-        handler.handle(DeleteTenantCommand(tenant_id=tenant_id, actor=current_user))
+        await handler.handle(
+            DeleteTenantCommand(tenant_id=tenant_id, actor=current_user)
+        )
     except TenantNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
     except ConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     return Response(status_code=204)

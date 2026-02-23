@@ -4,8 +4,17 @@ import asyncio
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
-from sqlalchemy.orm import Session
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import (
     build_vm_mutation_deps,
@@ -41,7 +50,10 @@ from app.application.commands.instance_commands import (
 )
 from app.application.queries.get_instance import GetInstanceHandler
 from app.application.services.audit_logger import write_audit_log
-from app.application.queries.list_instances import ListInstancesHandler, ListInstancesQuery
+from app.application.queries.list_instances import (
+    ListInstancesHandler,
+    ListInstancesQuery,
+)
 from app.application.services.console_port import compute_console_vnc_port
 from app.config import Settings
 from app.domain.auth import User
@@ -52,18 +64,20 @@ logger = logging.getLogger(__name__)
 
 
 @instance_router.post("", response_model=InstanceTaskAcceptedResponse, status_code=202)
-def create_instance(
+async def create_instance(
     body: CreateInstanceRequest,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
-    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
-    ensure_mutation_allowed_for_user_tenant(session, current_user)
+    deps = build_vm_mutation_deps(
+        session, outbox_notify_channel=settings.outbox_notify_channel
+    )
+    await ensure_mutation_allowed_for_user_tenant(session, current_user)
     tenant_id = resolve_tenant_for_create(current_user, body.tenant_id)
-    uow.advisory_lock(4001)
+    await uow.advisory_lock(4001)
     handler = CreateInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
@@ -72,7 +86,7 @@ def create_instance(
         accounting=deps.accounting,
         quota_accounting=deps.quota_accounting,
     )
-    accepted = handler.handle(
+    accepted = await handler.handle(
         CreateInstanceCommand(
             tenant_id=tenant_id,
             name=body.name,
@@ -83,7 +97,7 @@ def create_instance(
             image_id=body.image_id,
         )
     )
-    write_audit_log(
+    await write_audit_log(
         session=session,
         request=request,
         action="instance.create.requested",
@@ -93,7 +107,7 @@ def create_instance(
         tenant_id=tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    uow.commit()
+    await uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -103,23 +117,29 @@ def create_instance(
     )
 
 
-@instance_router.put("/{instance_id}", response_model=InstanceTaskAcceptedResponse, status_code=202)
-def update_instance(
+@instance_router.put(
+    "/{instance_id}", response_model=InstanceTaskAcceptedResponse, status_code=202
+)
+async def update_instance(
     instance_id: UUID,
     body: UpdateInstanceRequest,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
-    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
-    ensure_mutation_allowed_for_user_tenant(session, current_user)
-    existing = deps.read_repository.get(instance_id)
+    deps = build_vm_mutation_deps(
+        session, outbox_notify_channel=settings.outbox_notify_channel
+    )
+    await ensure_mutation_allowed_for_user_tenant(session, current_user)
+    existing = await deps.read_repository.get(instance_id)
     if not existing:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="instance not found"
+        )
     ensure_instance_access(current_user, existing.tenant_id)
-    uow.advisory_lock(4001)
+    await uow.advisory_lock(4001)
     handler = UpdateInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
@@ -128,7 +148,7 @@ def update_instance(
         accounting=deps.accounting,
         quota_accounting=deps.quota_accounting,
     )
-    accepted = handler.handle(
+    accepted = await handler.handle(
         UpdateInstanceCommand(
             instance_id=instance_id,
             cpu=body.cpu,
@@ -137,7 +157,7 @@ def update_instance(
             host_node=settings.host_node,
         )
     )
-    write_audit_log(
+    await write_audit_log(
         session=session,
         request=request,
         action="instance.update.requested",
@@ -147,7 +167,7 @@ def update_instance(
         tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    uow.commit()
+    await uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -157,30 +177,36 @@ def update_instance(
     )
 
 
-@instance_router.delete("/{instance_id}", response_model=InstanceTaskAcceptedResponse, status_code=202)
-def delete_instance(
+@instance_router.delete(
+    "/{instance_id}", response_model=InstanceTaskAcceptedResponse, status_code=202
+)
+async def delete_instance(
     instance_id: UUID,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
-    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
-    ensure_mutation_allowed_for_user_tenant(session, current_user)
-    existing = deps.read_repository.get(instance_id)
+    deps = build_vm_mutation_deps(
+        session, outbox_notify_channel=settings.outbox_notify_channel
+    )
+    await ensure_mutation_allowed_for_user_tenant(session, current_user)
+    existing = await deps.read_repository.get(instance_id)
     if not existing:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="instance not found"
+        )
     ensure_instance_access(current_user, existing.tenant_id)
-    uow.advisory_lock(4001)
+    await uow.advisory_lock(4001)
     handler = DeleteInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
         outbox_repository=deps.outbox_repository,
         outbox_max_attempts=settings.outbox_max_attempts,
     )
-    accepted = handler.handle(DeleteInstanceCommand(instance_id=instance_id))
-    write_audit_log(
+    accepted = await handler.handle(DeleteInstanceCommand(instance_id=instance_id))
+    await write_audit_log(
         session=session,
         request=request,
         action="instance.delete.requested",
@@ -190,7 +216,7 @@ def delete_instance(
         tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    uow.commit()
+    await uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -200,30 +226,36 @@ def delete_instance(
     )
 
 
-@instance_router.post("/{instance_id}/stop", response_model=InstanceTaskAcceptedResponse, status_code=202)
-def stop_instance(
+@instance_router.post(
+    "/{instance_id}/stop", response_model=InstanceTaskAcceptedResponse, status_code=202
+)
+async def stop_instance(
     instance_id: UUID,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
-    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
-    ensure_mutation_allowed_for_user_tenant(session, current_user)
-    existing = deps.read_repository.get(instance_id)
+    deps = build_vm_mutation_deps(
+        session, outbox_notify_channel=settings.outbox_notify_channel
+    )
+    await ensure_mutation_allowed_for_user_tenant(session, current_user)
+    existing = await deps.read_repository.get(instance_id)
     if not existing:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="instance not found"
+        )
     ensure_instance_access(current_user, existing.tenant_id)
-    uow.advisory_lock(4001)
+    await uow.advisory_lock(4001)
     handler = StopInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
         outbox_repository=deps.outbox_repository,
         outbox_max_attempts=settings.outbox_max_attempts,
     )
-    accepted = handler.handle(StopInstanceCommand(instance_id=instance_id))
-    write_audit_log(
+    accepted = await handler.handle(StopInstanceCommand(instance_id=instance_id))
+    await write_audit_log(
         session=session,
         request=request,
         action="instance.stop.requested",
@@ -233,7 +265,7 @@ def stop_instance(
         tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    uow.commit()
+    await uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -243,22 +275,28 @@ def stop_instance(
     )
 
 
-@instance_router.post("/{instance_id}/start", response_model=InstanceTaskAcceptedResponse, status_code=202)
-def start_instance(
+@instance_router.post(
+    "/{instance_id}/start", response_model=InstanceTaskAcceptedResponse, status_code=202
+)
+async def start_instance(
     instance_id: UUID,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     settings: Settings = request.app.state.settings
-    deps = build_vm_mutation_deps(session, outbox_notify_channel=settings.outbox_notify_channel)
-    ensure_mutation_allowed_for_user_tenant(session, current_user)
-    existing = deps.read_repository.get(instance_id)
+    deps = build_vm_mutation_deps(
+        session, outbox_notify_channel=settings.outbox_notify_channel
+    )
+    await ensure_mutation_allowed_for_user_tenant(session, current_user)
+    existing = await deps.read_repository.get(instance_id)
     if not existing:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="instance not found"
+        )
     ensure_instance_access(current_user, existing.tenant_id)
-    uow.advisory_lock(4001)
+    await uow.advisory_lock(4001)
     handler = StartInstanceHandler(
         write_repository=deps.write_repository,
         task_repository=deps.task_repository,
@@ -267,8 +305,10 @@ def start_instance(
         accounting=deps.accounting,
         quota_accounting=deps.quota_accounting,
     )
-    accepted = handler.handle(StartInstanceCommand(instance_id=instance_id, host_node=settings.host_node))
-    write_audit_log(
+    accepted = await handler.handle(
+        StartInstanceCommand(instance_id=instance_id, host_node=settings.host_node)
+    )
+    await write_audit_log(
         session=session,
         request=request,
         action="instance.start.requested",
@@ -278,7 +318,7 @@ def start_instance(
         tenant_id=existing.tenant_id,
         metadata={"task_id": str(accepted.task_id)},
     )
-    uow.commit()
+    await uow.commit()
     return InstanceTaskAcceptedResponse(
         task_id=accepted.task_id,
         instance_id=accepted.instance_id,
@@ -289,8 +329,8 @@ def start_instance(
 
 
 @instance_router.get("", response_model=ListInstancesResponse)
-def list_instances(
-    session: Session = Depends(get_session),
+async def list_instances(
+    session: AsyncSession = Depends(get_session),
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     status: str | None = Query(default=None),
@@ -301,7 +341,7 @@ def list_instances(
     deps = build_vm_query_deps(session)
     effective_tenant_id = resolve_tenant_scope_for_list(current_user, tenant_id)
     handler = ListInstancesHandler(read_repository=deps.read_repository)
-    result = handler.handle(
+    result = await handler.handle(
         ListInstancesQuery(
             limit=limit,
             offset=offset,
@@ -319,29 +359,31 @@ def list_instances(
 
 
 @instance_router.get("/{instance_id}", response_model=InstanceResponse)
-def get_instance(
+async def get_instance(
     instance_id: UUID,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     current_user: User = Depends(require_roles("viewer", "operator", "admin")),
 ):
     deps = build_vm_query_deps(session)
     handler = GetInstanceHandler(read_repository=deps.read_repository)
-    instance = handler.handle(instance_id)
+    instance = await handler.handle(instance_id)
     ensure_instance_access(current_user, instance.tenant_id)
     return to_instance_response(instance)
 
 
-@instance_router.post("/{instance_id}/console-ticket", response_model=ConsoleTicketResponse)
-def issue_console_ticket(
+@instance_router.post(
+    "/{instance_id}/console-ticket", response_model=ConsoleTicketResponse
+)
+async def issue_console_ticket(
     instance_id: UUID,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("operator", "admin")),
 ):
     deps = build_vm_query_deps(session)
     handler = GetInstanceHandler(read_repository=deps.read_repository)
-    instance = handler.handle(instance_id)
+    instance = await handler.handle(instance_id)
     ensure_instance_access(current_user, instance.tenant_id)
     if instance.status != "running":
         raise HTTPException(
@@ -356,7 +398,7 @@ def issue_console_ticket(
         issued_by_user_id=current_user.id,
         ttl_seconds=settings.console_ticket_ttl_seconds,
     )
-    write_audit_log(
+    await write_audit_log(
         session=session,
         request=request,
         action="instance.console.ticket_issued",
@@ -366,7 +408,7 @@ def issue_console_ticket(
         tenant_id=instance.tenant_id,
         metadata={"expires_at": ticket.expires_at.isoformat()},
     )
-    uow.commit()
+    await uow.commit()
     return ConsoleTicketResponse(
         ticket=ticket.ticket,
         expires_at=ticket.expires_at,
@@ -393,7 +435,9 @@ async def proxy_instance_console(
         span=settings.console_vnc_port_span,
     )
     try:
-        reader, writer = await asyncio.open_connection(settings.console_proxy_host, vnc_port)
+        reader, writer = await asyncio.open_connection(
+            settings.console_proxy_host, vnc_port
+        )
     except Exception:
         await websocket.close(code=1011, reason="console backend unavailable")
         return
@@ -453,15 +497,25 @@ async def proxy_instance_console(
         for task in done:
             exc = task.exception()
             if exc is not None:
-                logger.warning("console proxy task exception: instance_id=%s err=%r", instance_id, exc)
+                logger.warning(
+                    "console proxy task exception: instance_id=%s err=%r",
+                    instance_id,
+                    exc,
+                )
     except WebSocketDisconnect as exc:
-        logger.info("console ws top-level disconnect: instance_id=%s code=%s", instance_id, exc.code)
+        logger.info(
+            "console ws top-level disconnect: instance_id=%s code=%s",
+            instance_id,
+            exc.code,
+        )
     finally:
         writer.close()
         try:
             await writer.wait_closed()
         except Exception as exc:  # pragma: no cover
-            logger.warning("console writer close error: instance_id=%s err=%r", instance_id, exc)
+            logger.warning(
+                "console writer close error: instance_id=%s err=%r", instance_id, exc
+            )
         try:
             await websocket.close()
         except RuntimeError:

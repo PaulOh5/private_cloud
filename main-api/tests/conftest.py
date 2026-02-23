@@ -9,16 +9,31 @@ import pytest
 from app.domain.models import Instance, InstanceTask, ResourceSpec
 
 
+class _AwaitableValue:
+    def __init__(self, value):
+        self.value = value
+
+    def __await__(self):
+        async def _wrapped():
+            return self.value
+
+        return _wrapped().__await__()
+
+
+def _awaitable(value):
+    return _AwaitableValue(value)
+
+
 class InMemoryInstanceRepo:
     def __init__(self):
         self.instances: dict[UUID, Instance] = {}
 
     def get_for_update(self, instance_id: UUID) -> Instance | None:
-        return self.instances.get(instance_id)
+        return _awaitable(self.instances.get(instance_id))
 
     def create(self, instance: Instance) -> Instance:
         self.instances[instance.id] = instance
-        return instance
+        return _awaitable(instance)
 
     def update_spec(
         self,
@@ -42,7 +57,7 @@ class InMemoryInstanceRepo:
             updated_at=datetime.now(timezone.utc),
         )
         self.instances[instance_id] = updated
-        return updated
+        return _awaitable(updated)
 
     def update_state(
         self,
@@ -64,7 +79,7 @@ class InMemoryInstanceRepo:
             updated_at=datetime.now(timezone.utc),
         )
         self.instances[instance_id] = updated
-        return updated
+        return _awaitable(updated)
 
 
 class InMemoryTaskRepo:
@@ -72,22 +87,27 @@ class InMemoryTaskRepo:
         self.tasks: dict[UUID, InstanceTask] = {}
 
     def has_active_task(self, instance_id: UUID) -> bool:
-        return any(
-            t.instance_id == instance_id and t.status in {"queued", "running", "cancel_pending"}
-            for t in self.tasks.values()
+        return _awaitable(
+            any(
+                t.instance_id == instance_id
+                and t.status in {"queued", "running", "cancel_pending"}
+                for t in self.tasks.values()
+            )
         )
 
     def create_task(self, task: InstanceTask) -> InstanceTask:
         self.tasks[task.id] = task
-        return task
+        return _awaitable(task)
 
     def get(self, task_id: UUID) -> InstanceTask | None:
-        return self.tasks.get(task_id)
+        return _awaitable(self.tasks.get(task_id))
 
     def get_for_update(self, task_id: UUID) -> InstanceTask | None:
-        return self.tasks.get(task_id)
+        return _awaitable(self.tasks.get(task_id))
 
-    def list(self, limit: int, offset: int, status, instance_id, command, tenant_id=None):
+    def list(
+        self, limit: int, offset: int, status, instance_id, command, tenant_id=None
+    ):
         items = list(self.tasks.values())
         if status:
             items = [t for t in items if t.status == status]
@@ -96,7 +116,7 @@ class InMemoryTaskRepo:
         if command:
             items = [t for t in items if t.command == command]
         total = len(items)
-        return items[offset : offset + limit], total
+        return _awaitable((items[offset : offset + limit], total))
 
     def mark_running(self, task_id: UUID, attempt_count: int) -> InstanceTask:
         t = self.tasks[task_id]
@@ -108,7 +128,7 @@ class InMemoryTaskRepo:
             updated_at=datetime.now(timezone.utc),
         )
         self.tasks[task_id] = updated
-        return updated
+        return _awaitable(updated)
 
     def mark_cancel_pending(
         self,
@@ -123,7 +143,7 @@ class InMemoryTaskRepo:
             updated_at=datetime.now(timezone.utc),
         )
         self.tasks[task_id] = updated
-        return updated
+        return _awaitable(updated)
 
     def mark_canceled(
         self,
@@ -147,7 +167,7 @@ class InMemoryTaskRepo:
             updated_at=datetime.now(timezone.utc),
         )
         self.tasks[task_id] = updated
-        return updated
+        return _awaitable(updated)
 
     def clone_for_retry(
         self,
@@ -171,7 +191,7 @@ class InMemoryTaskRepo:
             updated_at=created_at,
         )
         self.tasks[new_task_id] = cloned
-        return cloned
+        return _awaitable(cloned)
 
     def mark_terminal(
         self,
@@ -194,12 +214,12 @@ class InMemoryTaskRepo:
             updated_at=datetime.now(timezone.utc),
         )
         self.tasks[task_id] = updated
-        return updated
+        return _awaitable(updated)
 
 
 class DummyCapacity:
     def assert_capacity(self, check):
-        return None
+        return _awaitable(None)
 
 
 class DummyProvisioning:
@@ -225,9 +245,12 @@ class DummyProvisioning:
                 "max_attempts": max_attempts,
             }
         )
+        return _awaitable(None)
 
-    def publish_command(self, command: str, payload: dict, task_id: UUID, request_id: UUID) -> None:
-        self.enqueue_command(
+    def publish_command(
+        self, command: str, payload: dict, task_id: UUID, request_id: UUID
+    ) -> None:
+        return self.enqueue_command(
             topic=command,
             payload=payload,
             task_id=task_id,

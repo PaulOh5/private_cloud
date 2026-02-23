@@ -90,7 +90,8 @@ def _valid_event_body() -> bytes:
     return json.dumps(payload).encode("utf-8")
 
 
-def test_result_consumer_retryable_error_nacks_with_requeue(monkeypatch):
+@pytest.mark.asyncio
+async def test_result_consumer_retryable_error_nacks_with_requeue(monkeypatch):
     class _RetryProcessor:
         def __init__(self, *_args, **_kwargs):
             pass
@@ -100,28 +101,34 @@ def test_result_consumer_retryable_error_nacks_with_requeue(monkeypatch):
 
     monkeypatch.setattr(consumer_module, "TaskResultProcessor", _RetryProcessor)
 
-    consumer = consumer_module.RabbitMqVmResultConsumer("amqp://unused", _DummySessionFactory())
+    consumer = consumer_module.RabbitMqVmResultConsumer(
+        "amqp://unused", _DummySessionFactory()
+    )
     fake_channel = _FakeChannel(consumer._stop_event, _valid_event_body())
     monkeypatch.setattr(consumer, "_connection", lambda: _FakeConnection(fake_channel))
     monkeypatch.setattr(consumer, "_declare", lambda _channel: None)
 
-    consumer._run()
+    await consumer._run()
     assert fake_channel.acks == []
     assert fake_channel.nacks == [(1, True)]
 
 
-def test_result_consumer_nonretryable_payload_nacks_without_requeue(monkeypatch):
-    consumer = consumer_module.RabbitMqVmResultConsumer("amqp://unused", _DummySessionFactory())
+@pytest.mark.asyncio
+async def test_result_consumer_nonretryable_payload_nacks_without_requeue(monkeypatch):
+    consumer = consumer_module.RabbitMqVmResultConsumer(
+        "amqp://unused", _DummySessionFactory()
+    )
     fake_channel = _FakeChannel(consumer._stop_event, b"{not-json")
     monkeypatch.setattr(consumer, "_connection", lambda: _FakeConnection(fake_channel))
     monkeypatch.setattr(consumer, "_declare", lambda _channel: None)
 
-    consumer._run()
+    await consumer._run()
     assert fake_channel.acks == []
     assert fake_channel.nacks == [(1, False)]
 
 
-def test_result_consumer_marks_ready_after_topology_declare(monkeypatch):
+@pytest.mark.asyncio
+async def test_result_consumer_marks_ready_after_topology_declare(monkeypatch):
     class _NoopProcessor:
         def __init__(self, *_args, **_kwargs):
             pass
@@ -131,10 +138,12 @@ def test_result_consumer_marks_ready_after_topology_declare(monkeypatch):
 
     monkeypatch.setattr(consumer_module, "TaskResultProcessor", _NoopProcessor)
 
-    consumer = consumer_module.RabbitMqVmResultConsumer("amqp://unused", _DummySessionFactory())
+    consumer = consumer_module.RabbitMqVmResultConsumer(
+        "amqp://unused", _DummySessionFactory()
+    )
     fake_channel = _FakeChannel(consumer._stop_event, _valid_event_body())
     monkeypatch.setattr(consumer, "_connection", lambda: _FakeConnection(fake_channel))
     monkeypatch.setattr(consumer, "_declare", lambda _channel: None)
 
-    consumer._run()
+    await consumer._run()
     assert consumer.wait_until_ready(timeout=0) is True

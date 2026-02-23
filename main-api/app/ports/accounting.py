@@ -17,8 +17,7 @@ class CapacityCheckInput:
 
 
 class ResourceAccountingPort(Protocol):
-    def assert_capacity(self, check: CapacityCheckInput) -> None:
-        ...
+    async def assert_capacity(self, check: CapacityCheckInput) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -31,5 +30,4 @@ class TenantQuotaCheckInput:
 
 
 class TenantQuotaAccountingPort(Protocol):
-    def assert_quota(self, check: TenantQuotaCheckInput) -> None:
-        ...
+    async def assert_quota(self, check: TenantQuotaCheckInput) -> None: ...

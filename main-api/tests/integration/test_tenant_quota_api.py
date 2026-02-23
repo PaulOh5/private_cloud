@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import importlib
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select
 
+from app.adapters.postgres_repositories.orm.outbox import CommandOutboxModel
 from app.config import get_settings
 
 postgres = pytest.importorskip("testcontainers.postgres")
 DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+
+
+def _enum_value(value):
+    return value.value if hasattr(value, "value") else value
 
 
 class DummyVmProvisioningAdapter:
@@ -69,9 +74,15 @@ def api_client(pg_container, monkeypatch):
     import app.adapters.rabbitmq_rpc as rpc_module
     import app.adapters.rabbitmq_image_sync_rpc as image_sync_module
 
-    monkeypatch.setattr(rpc_module, "RabbitMqVmProvisioningAdapter", DummyVmProvisioningAdapter)
-    monkeypatch.setattr(result_module, "RabbitMqVmResultConsumer", DummyVmResultConsumer)
-    monkeypatch.setattr(image_sync_module, "RabbitMqVmImageSyncRpcAdapter", DummyVmImageSyncRpcAdapter)
+    monkeypatch.setattr(
+        rpc_module, "RabbitMqVmProvisioningAdapter", DummyVmProvisioningAdapter
+    )
+    monkeypatch.setattr(
+        result_module, "RabbitMqVmResultConsumer", DummyVmResultConsumer
+    )
+    monkeypatch.setattr(
+        image_sync_module, "RabbitMqVmImageSyncRpcAdapter", DummyVmImageSyncRpcAdapter
+    )
 
     get_settings.cache_clear()
     import app.main as main_module
@@ -84,7 +95,9 @@ def api_client(pg_container, monkeypatch):
 
 
 def _login(client: TestClient, username: str, password: str) -> dict:
-    response = client.post("/auth/login", json={"username": username, "password": password})
+    response = client.post(
+        "/auth/login", json={"username": username, "password": password}
+    )
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -97,7 +110,9 @@ def test_default_tenant_is_bootstrapped(api_client: TestClient):
     response = api_client.get("/tenants", headers=headers)
     assert response.status_code == 200, response.text
     items = response.json()["items"]
-    assert any(item["id"] == DEFAULT_TENANT_ID and item["key"] == "default" for item in items)
+    assert any(
+        item["id"] == DEFAULT_TENANT_ID and item["key"] == "default" for item in items
+    )
 
 
 @pytest.mark.integration
@@ -108,27 +123,27 @@ def test_create_instance_enqueues_command_outbox(api_client: TestClient):
     created = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": DEFAULT_TENANT_ID, "name": "outbox-api", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": DEFAULT_TENANT_ID,
+            "name": "outbox-api",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert created.status_code == 202, created.text
     task_id = created.json()["task_id"]
 
     with api_client.app.state.session_factory() as session:
         row = session.execute(
-            text(
-                """
-                SELECT topic, status
-                FROM command_outbox
-                WHERE task_id = :task_id
-                ORDER BY created_at DESC
-                LIMIT 1
-                """
-            ),
-            {"task_id": task_id},
-        ).mappings().one()
+            select(CommandOutboxModel.topic, CommandOutboxModel.status)
+            .where(CommandOutboxModel.task_id == UUID(task_id))
+            .order_by(CommandOutboxModel.created_at.desc())
+            .limit(1)
+        ).one()
 
-    assert row["topic"] == "instance.create"
-    assert row["status"] in {"queued", "sent"}
+    assert row[0] == "instance.create"
+    assert _enum_value(row[1]) in {"queued", "sent"}
 
 
 @pytest.mark.integration
@@ -163,14 +178,26 @@ def test_admin_instance_requires_tenant_id_and_enforces_quota(api_client: TestCl
     first = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": tenant_id, "name": "vm-1", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": tenant_id,
+            "name": "vm-1",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert first.status_code == 202, first.text
 
     second = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": tenant_id, "name": "vm-2", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": tenant_id,
+            "name": "vm-2",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert second.status_code == 409, second.text
     assert second.json()["code"] == "QUOTA_EXCEEDED"
@@ -201,7 +228,13 @@ def test_tenant_quota_reduction_below_usage_is_blocked(api_client: TestClient):
     created = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": tenant_id, "name": "vm-usage", "cpu": 2, "memory_mib": 2048, "disk_gib": 30},
+        json={
+            "tenant_id": tenant_id,
+            "name": "vm-usage",
+            "cpu": 2,
+            "memory_mib": 2048,
+            "disk_gib": 30,
+        },
     )
     assert created.status_code == 202, created.text
 
@@ -273,7 +306,13 @@ def test_non_admin_cross_tenant_instance_access_returns_404(api_client: TestClie
     create_vm = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": tenant_b_id, "name": "vm-b", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": tenant_b_id,
+            "name": "vm-b",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert create_vm.status_code == 202, create_vm.text
     instance_id = create_vm.json()["instance_id"]

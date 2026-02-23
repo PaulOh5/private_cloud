@@ -1,11 +1,17 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from app.application.services.task_result_processor import TaskResultProcessor, VmResultEvent
+import pytest
+
+from app.application.services.task_result_processor import (
+    TaskResultProcessor,
+    VmResultEvent,
+)
 from app.domain.models import Instance, InstanceTask, ResourceSpec
 
 
-def test_result_processor_create_success_sets_instance_running(
+@pytest.mark.asyncio
+async def test_result_processor_create_success_sets_instance_running(
     in_memory_instance_repo,
     in_memory_task_repo,
 ):
@@ -50,7 +56,7 @@ def test_result_processor_create_success_sets_instance_running(
     )
 
     processor = TaskResultProcessor(in_memory_instance_repo, in_memory_task_repo)
-    processor.process(
+    await processor.process(
         VmResultEvent(
             task_id=task_id,
             request_id=request_id,
@@ -72,7 +78,8 @@ def test_result_processor_create_success_sets_instance_running(
     assert instance.ip_address == "172.30.50.10"
 
 
-def test_result_processor_update_failed_rolls_back_spec(
+@pytest.mark.asyncio
+async def test_result_processor_update_failed_rolls_back_spec(
     in_memory_instance_repo,
     in_memory_task_repo,
 ):
@@ -121,7 +128,7 @@ def test_result_processor_update_failed_rolls_back_spec(
     )
 
     processor = TaskResultProcessor(in_memory_instance_repo, in_memory_task_repo)
-    processor.process(
+    await processor.process(
         VmResultEvent(
             task_id=task_id,
             request_id=request_id,
@@ -146,7 +153,8 @@ def test_result_processor_update_failed_rolls_back_spec(
     assert instance.resource_spec.disk_gib == 30
 
 
-def test_result_processor_canceled_marks_task_canceled(
+@pytest.mark.asyncio
+async def test_result_processor_canceled_marks_task_canceled(
     in_memory_instance_repo,
     in_memory_task_repo,
 ):
@@ -195,7 +203,7 @@ def test_result_processor_canceled_marks_task_canceled(
     )
 
     processor = TaskResultProcessor(in_memory_instance_repo, in_memory_task_repo)
-    processor.process(
+    await processor.process(
         VmResultEvent(
             task_id=task_id,
             request_id=request_id,
@@ -217,7 +225,8 @@ def test_result_processor_canceled_marks_task_canceled(
     assert instance.resource_spec.cpu == 2
 
 
-def test_result_processor_ignores_running_event_for_cancel_pending(
+@pytest.mark.asyncio
+async def test_result_processor_ignores_running_event_for_cancel_pending(
     in_memory_instance_repo,
     in_memory_task_repo,
 ):
@@ -262,7 +271,7 @@ def test_result_processor_ignores_running_event_for_cancel_pending(
     )
 
     processor = TaskResultProcessor(in_memory_instance_repo, in_memory_task_repo)
-    processor.process(
+    await processor.process(
         VmResultEvent(
             task_id=task_id,
             request_id=request_id,
@@ -280,7 +289,8 @@ def test_result_processor_ignores_running_event_for_cancel_pending(
     assert in_memory_task_repo.tasks[task_id].status == "cancel_pending"
 
 
-def test_result_processor_update_success_keeps_stopped_when_result_status_is_stopped(
+@pytest.mark.asyncio
+async def test_result_processor_update_success_keeps_stopped_when_result_status_is_stopped(
     in_memory_instance_repo,
     in_memory_task_repo,
 ):
@@ -325,7 +335,7 @@ def test_result_processor_update_success_keeps_stopped_when_result_status_is_sto
     )
 
     processor = TaskResultProcessor(in_memory_instance_repo, in_memory_task_repo)
-    processor.process(
+    await processor.process(
         VmResultEvent(
             task_id=task_id,
             request_id=request_id,
@@ -343,7 +353,8 @@ def test_result_processor_update_success_keeps_stopped_when_result_status_is_sto
     assert in_memory_task_repo.tasks[task_id].status == "succeeded"
 
 
-def test_result_processor_stop_failed_rolls_back_to_running(
+@pytest.mark.asyncio
+async def test_result_processor_stop_failed_rolls_back_to_running(
     in_memory_instance_repo,
     in_memory_task_repo,
 ):
@@ -392,7 +403,7 @@ def test_result_processor_stop_failed_rolls_back_to_running(
     )
 
     processor = TaskResultProcessor(in_memory_instance_repo, in_memory_task_repo)
-    processor.process(
+    await processor.process(
         VmResultEvent(
             task_id=task_id,
             request_id=request_id,
@@ -410,7 +421,8 @@ def test_result_processor_stop_failed_rolls_back_to_running(
     assert in_memory_task_repo.tasks[task_id].status == "failed"
 
 
-def test_result_processor_start_failed_rolls_back_to_stopped(
+@pytest.mark.asyncio
+async def test_result_processor_start_failed_rolls_back_to_stopped(
     in_memory_instance_repo,
     in_memory_task_repo,
 ):
@@ -459,7 +471,7 @@ def test_result_processor_start_failed_rolls_back_to_stopped(
     )
 
     processor = TaskResultProcessor(in_memory_instance_repo, in_memory_task_repo)
-    processor.process(
+    await processor.process(
         VmResultEvent(
             task_id=task_id,
             request_id=request_id,

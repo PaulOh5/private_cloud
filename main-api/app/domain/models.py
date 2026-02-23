@@ -17,7 +17,9 @@ InstanceStatus = Literal[
     "deleted",
 ]
 TaskCommand = Literal["create", "update", "delete", "start", "stop"]
-TaskStatus = Literal["queued", "running", "cancel_pending", "succeeded", "failed", "canceled"]
+TaskStatus = Literal[
+    "queued", "running", "cancel_pending", "succeeded", "failed", "canceled"
+]
 OutboxStatus = Literal["queued", "publishing", "sent", "failed"]
 
 

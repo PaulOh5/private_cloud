@@ -8,19 +8,25 @@ from app.domain.auth import RefreshToken, Role, User
 
 class UserRepository(ABC):
     @abstractmethod
-    def get_by_id(self, user_id: UUID) -> User | None:
+    async def get_by_id(self, user_id: UUID) -> User | None:
         raise NotImplementedError
 
     @abstractmethod
-    def get_by_username(self, username: str) -> User | None:
+    async def get_by_username(self, username: str) -> User | None:
         raise NotImplementedError
 
     @abstractmethod
-    def ensure_user(self, username: str, password_hash: str, role: Role, tenant_id: UUID | None = None) -> User:
+    async def ensure_user(
+        self,
+        username: str,
+        password_hash: str,
+        role: Role,
+        tenant_id: UUID | None = None,
+    ) -> User:
         raise NotImplementedError
 
     @abstractmethod
-    def create_user(
+    async def create_user(
         self,
         username: str,
         password_hash: str,
@@ -31,7 +37,7 @@ class UserRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list_users(
+    async def list_users(
         self,
         limit: int,
         offset: int,
@@ -43,7 +49,7 @@ class UserRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def update_user(
+    async def update_user(
         self,
         user_id: UUID,
         role: Role | None = None,
@@ -54,23 +60,23 @@ class UserRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def count_active_admins(self) -> int:
+    async def count_active_admins(self) -> int:
         raise NotImplementedError
 
 
 class RefreshTokenRepository(ABC):
     @abstractmethod
-    def create(self, user_id: UUID, token_hash: str, expires_at) -> RefreshToken:
+    async def create(self, user_id: UUID, token_hash: str, expires_at) -> RefreshToken:
         raise NotImplementedError
 
     @abstractmethod
-    def get_active_by_hash(self, token_hash: str) -> RefreshToken | None:
+    async def get_active_by_hash(self, token_hash: str) -> RefreshToken | None:
         raise NotImplementedError
 
     @abstractmethod
-    def revoke_by_hash(self, token_hash: str) -> RefreshToken | None:
+    async def revoke_by_hash(self, token_hash: str) -> RefreshToken | None:
         raise NotImplementedError
 
     @abstractmethod
-    def revoke_all_for_user(self, user_id: UUID) -> int:
+    async def revoke_all_for_user(self, user_id: UUID) -> int:
         raise NotImplementedError

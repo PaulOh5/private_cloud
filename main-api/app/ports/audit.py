@@ -8,7 +8,7 @@ from app.domain.models import AuditLog
 
 class AuditLogRepository(ABC):
     @abstractmethod
-    def create(
+    async def create(
         self,
         *,
         tenant_id: UUID | None,
@@ -25,11 +25,11 @@ class AuditLogRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get(self, log_id: UUID) -> AuditLog | None:
+    async def get(self, log_id: UUID) -> AuditLog | None:
         raise NotImplementedError
 
     @abstractmethod
-    def list(
+    async def list(
         self,
         *,
         limit: int,

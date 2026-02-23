@@ -2,6 +2,10 @@ class DomainError(Exception):
     code = "DOMAIN_ERROR"
 
 
+class ForbiddenError(DomainError):
+    code = "FORBIDDEN"
+
+
 class ValidationError(DomainError):
     code = "VALIDATION_ERROR"
 

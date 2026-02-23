@@ -8,11 +8,9 @@ logger = logging.getLogger(__name__)
 
 
 class RuntimeWorker(Protocol):
-    def start(self) -> None:
-        ...
+    def start(self) -> None: ...
 
-    def stop(self) -> None:
-        ...
+    def stop(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -38,8 +36,12 @@ class WorkerLifecycleManager:
 
                 if not spec.requires_ready:
                     continue
-                if not self._wait_until_ready(spec.worker, timeout=spec.ready_timeout_seconds):
-                    raise RuntimeError(f"worker {spec.name} was not ready in {spec.ready_timeout_seconds:.1f}s")
+                if not self._wait_until_ready(
+                    spec.worker, timeout=spec.ready_timeout_seconds
+                ):
+                    raise RuntimeError(
+                        f"worker {spec.name} was not ready in {spec.ready_timeout_seconds:.1f}s"
+                    )
         except Exception:
             logger.exception("worker startup failed; stopping started workers")
             self.stop_all()

@@ -5,13 +5,14 @@ import socket
 import threading
 from datetime import datetime, timezone
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import update
 from starlette.websockets import WebSocketDisconnect
 
+from app.adapters.postgres_repositories.orm.instance import InstanceModel
 from app.config import get_settings
 
 postgres = pytest.importorskip("testcontainers.postgres")
@@ -46,7 +47,12 @@ class DummyVmImageSyncRpcAdapter:
             "status": "synced",
             "default_image_id": "ubuntu-24.04",
             "total_images": 1,
-            "synchronized_items": [{"id": "ubuntu-24.04", "path": "/var/lib/vm-manager/images/ubuntu-24.04/base.qcow2"}],
+            "synchronized_items": [
+                {
+                    "id": "ubuntu-24.04",
+                    "path": "/var/lib/vm-manager/images/ubuntu-24.04/base.qcow2",
+                }
+            ],
         }
 
 
@@ -73,9 +79,15 @@ def api_client(pg_container, monkeypatch):
     import app.adapters.rabbitmq_rpc as rpc_module
     import app.adapters.rabbitmq_image_sync_rpc as image_sync_module
 
-    monkeypatch.setattr(rpc_module, "RabbitMqVmProvisioningAdapter", DummyVmProvisioningAdapter)
-    monkeypatch.setattr(result_module, "RabbitMqVmResultConsumer", DummyVmResultConsumer)
-    monkeypatch.setattr(image_sync_module, "RabbitMqVmImageSyncRpcAdapter", DummyVmImageSyncRpcAdapter)
+    monkeypatch.setattr(
+        rpc_module, "RabbitMqVmProvisioningAdapter", DummyVmProvisioningAdapter
+    )
+    monkeypatch.setattr(
+        result_module, "RabbitMqVmResultConsumer", DummyVmResultConsumer
+    )
+    monkeypatch.setattr(
+        image_sync_module, "RabbitMqVmImageSyncRpcAdapter", DummyVmImageSyncRpcAdapter
+    )
 
     get_settings.cache_clear()
     import app.main as main_module
@@ -88,27 +100,21 @@ def api_client(pg_container, monkeypatch):
 
 
 def _login(client: TestClient, username: str, password: str) -> dict:
-    response = client.post("/auth/login", json={"username": username, "password": password})
+    response = client.post(
+        "/auth/login", json={"username": username, "password": password}
+    )
     assert response.status_code == 200, response.text
     return response.json()
 
 
-def _set_instance_status(client: TestClient, instance_id: str, status_value: str) -> None:
+def _set_instance_status(
+    client: TestClient, instance_id: str, status_value: str
+) -> None:
     with client.app.state.session_factory() as session:
         session.execute(
-            text(
-                """
-                UPDATE instances
-                SET status = :status,
-                    updated_at = :now
-                WHERE id = :instance_id
-                """
-            ),
-            {
-                "status": status_value,
-                "instance_id": instance_id,
-                "now": datetime.now(timezone.utc),
-            },
+            update(InstanceModel)
+            .where(InstanceModel.id == UUID(instance_id))
+            .values(status=status_value, updated_at=datetime.now(timezone.utc))
         )
         session.commit()
 
@@ -117,7 +123,13 @@ def _create_running_instance(client: TestClient, headers: dict[str, str]) -> str
     create_response = client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": DEFAULT_TENANT_ID, "name": "console-test", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": DEFAULT_TENANT_ID,
+            "name": "console-test",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert create_response.status_code == 202, create_response.text
     instance_id = create_response.json()["instance_id"]
@@ -131,11 +143,15 @@ def test_console_ticket_issue_success_and_audit_log(api_client: TestClient):
     admin_headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
     instance_id = _create_running_instance(api_client, admin_headers)
 
-    response = api_client.post(f"/instances/{instance_id}/console-ticket", headers=admin_headers)
+    response = api_client.post(
+        f"/instances/{instance_id}/console-ticket", headers=admin_headers
+    )
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["ticket"]
-    assert payload["websocket_path"].startswith(f"/instances/{instance_id}/console/ws?ticket=")
+    assert payload["websocket_path"].startswith(
+        f"/instances/{instance_id}/console/ws?ticket="
+    )
 
     logs = api_client.get(
         "/audit-logs",
@@ -170,7 +186,9 @@ def test_console_ticket_forbidden_for_viewer(api_client: TestClient):
     viewer_headers = {"Authorization": f"Bearer {viewer_tokens['access_token']}"}
     instance_id = _create_running_instance(api_client, admin_headers)
 
-    denied = api_client.post(f"/instances/{instance_id}/console-ticket", headers=viewer_headers)
+    denied = api_client.post(
+        f"/instances/{instance_id}/console-ticket", headers=viewer_headers
+    )
     assert denied.status_code == 403
 
 
@@ -181,7 +199,9 @@ def test_console_ticket_requires_running_status(api_client: TestClient):
     instance_id = _create_running_instance(api_client, admin_headers)
     _set_instance_status(api_client, instance_id, "stopped")
 
-    rejected = api_client.post(f"/instances/{instance_id}/console-ticket", headers=admin_headers)
+    rejected = api_client.post(
+        f"/instances/{instance_id}/console-ticket", headers=admin_headers
+    )
     assert rejected.status_code == 409
 
 
@@ -191,7 +211,9 @@ def test_console_websocket_proxy_allows_single_use_ticket(api_client: TestClient
     admin_headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
     instance_id = _create_running_instance(api_client, admin_headers)
 
-    response = api_client.post(f"/instances/{instance_id}/console-ticket", headers=admin_headers)
+    response = api_client.post(
+        f"/instances/{instance_id}/console-ticket", headers=admin_headers
+    )
     assert response.status_code == 200, response.text
     ticket = response.json()["ticket"]
 
@@ -243,10 +265,14 @@ def test_console_websocket_rejects_ticket_for_other_instance(api_client: TestCli
     instance_a = _create_running_instance(api_client, admin_headers)
     instance_b = _create_running_instance(api_client, admin_headers)
 
-    response = api_client.post(f"/instances/{instance_a}/console-ticket", headers=admin_headers)
+    response = api_client.post(
+        f"/instances/{instance_a}/console-ticket", headers=admin_headers
+    )
     assert response.status_code == 200, response.text
     ticket = response.json()["ticket"]
 
     with pytest.raises(WebSocketDisconnect):
-        with api_client.websocket_connect(f"/instances/{instance_b}/console/ws?ticket={ticket}"):
+        with api_client.websocket_connect(
+            f"/instances/{instance_b}/console/ws?ticket={ticket}"
+        ):
             pass

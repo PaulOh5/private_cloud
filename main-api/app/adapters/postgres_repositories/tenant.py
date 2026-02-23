@@ -3,156 +3,145 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, case, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.errors import ConflictError, NotFoundError
 from app.domain.models import Tenant, TenantQuota, TenantUsage
 from app.ports import TenantQuotaRepository, TenantRepository, TenantUsageReadPort
 
-from .common import _to_tenant, _to_tenant_quota, _to_tenant_usage
+from .common import to_tenant, to_tenant_quota, to_tenant_usage
+from .orm.instance import InstanceModel
+from .orm.resource import tenant_resource_usage_view
+from .orm.tenant import TenantModel, TenantQuotaModel
+from .orm.auth import UserModel
 
 
 class PostgresTenantRepository(TenantRepository):
-    def __init__(self, session: Session):
+    def __init__(self, session: AsyncSession):
         self.session = session
 
-    def create(self, *, key: str, name: str, is_active: bool = True) -> Tenant:
+    async def create(self, *, key: str, name: str, is_active: bool = True) -> Tenant:
         now = datetime.now(timezone.utc)
-        row = self.session.execute(
-            text(
-                """
-                INSERT INTO tenants (id, key, name, is_active, created_at, updated_at)
-                VALUES (:id, :key, :name, :is_active, :created_at, :updated_at)
-                ON CONFLICT (key) DO NOTHING
-                RETURNING *
-                """
-            ),
-            {
-                "id": str(uuid4()),
-                "key": key,
-                "name": name,
-                "is_active": is_active,
-                "created_at": now,
-                "updated_at": now,
-            },
-        ).mappings().first()
-        if not row:
+        stmt = (
+            pg_insert(TenantModel)
+            .values(
+                id=uuid4(),
+                key=key,
+                name=name,
+                is_active=is_active,
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=[TenantModel.key])
+            .returning(TenantModel)
+        )
+        model = await self.session.scalar(stmt)
+        if not model:
             raise ConflictError(f"tenant key {key} already exists")
-        return _to_tenant(row)
+        return to_tenant(model)
 
-    def get(self, tenant_id: UUID) -> Tenant | None:
-        row = self.session.execute(
-            text("SELECT * FROM tenants WHERE id = :id"),
-            {"id": str(tenant_id)},
-        ).mappings().first()
-        return _to_tenant(row) if row else None
+    async def get(self, tenant_id: UUID) -> Tenant | None:
+        model = await self.session.scalar(
+            select(TenantModel).where(TenantModel.id == tenant_id)
+        )
+        return to_tenant(model) if model else None
 
-    def get_by_key(self, key: str) -> Tenant | None:
-        row = self.session.execute(
-            text("SELECT * FROM tenants WHERE key = :key"),
-            {"key": key},
-        ).mappings().first()
-        return _to_tenant(row) if row else None
+    async def is_active(self, tenant_id: UUID) -> bool | None:
+        value = await self.session.scalar(
+            select(TenantModel.is_active).where(TenantModel.id == tenant_id)
+        )
+        if value is None:
+            return None
+        return bool(value)
 
-    def list(self, *, limit: int, offset: int, is_active: bool | None) -> tuple[list[Tenant], int]:
-        conditions: list[str] = []
-        params: dict[str, object] = {"limit": limit, "offset": offset}
+    async def get_by_key(self, key: str) -> Tenant | None:
+        model = await self.session.scalar(
+            select(TenantModel).where(TenantModel.key == key)
+        )
+        return to_tenant(model) if model else None
+
+    async def list(
+        self, *, limit: int, offset: int, is_active: bool | None
+    ) -> tuple[list[Tenant], int]:
+        stmt = (
+            select(TenantModel)
+            .order_by(TenantModel.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        count_stmt = select(func.count()).select_from(TenantModel)
         if is_active is not None:
-            conditions.append("is_active = :is_active")
-            params["is_active"] = is_active
-        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            stmt = stmt.where(TenantModel.is_active == is_active)
+            count_stmt = count_stmt.where(TenantModel.is_active == is_active)
 
-        rows = self.session.execute(
-            text(
-                f"""
-                SELECT *
-                FROM tenants
-                {where_clause}
-                ORDER BY created_at DESC
-                LIMIT :limit OFFSET :offset
-                """
-            ),
-            params,
-        ).mappings().all()
-        count_row = self.session.execute(
-            text(f"SELECT COUNT(*) AS total FROM tenants {where_clause}"),
-            params,
-        ).mappings().one()
-        return ([_to_tenant(row) for row in rows], int(count_row["total"]))
+        models = (await self.session.scalars(stmt)).all()
+        total = int((await self.session.scalar(count_stmt)) or 0)
+        return ([to_tenant(model) for model in models], total)
 
-    def update(self, tenant_id: UUID, *, name: str | None = None, is_active: bool | None = None) -> Tenant:
-        row = self.session.execute(
-            text(
-                """
-                UPDATE tenants
-                SET name = COALESCE(:name, name),
-                    is_active = COALESCE(:is_active, is_active),
-                    updated_at = :updated_at
-                WHERE id = :id
-                RETURNING *
-                """
-            ),
-            {
-                "id": str(tenant_id),
-                "name": name,
-                "is_active": is_active,
-                "updated_at": datetime.now(timezone.utc),
-            },
-        ).mappings().first()
-        if not row:
+    async def update(
+        self, tenant_id: UUID, *, name: str | None = None, is_active: bool | None = None
+    ) -> Tenant:
+        stmt = (
+            update(TenantModel)
+            .where(TenantModel.id == tenant_id)
+            .values(
+                name=func.coalesce(name, TenantModel.name),
+                is_active=func.coalesce(is_active, TenantModel.is_active),
+                updated_at=datetime.now(timezone.utc),
+            )
+            .returning(TenantModel)
+        )
+        model = await self.session.scalar(stmt)
+        if not model:
             raise NotFoundError(f"tenant {tenant_id} not found")
-        return _to_tenant(row)
+        return to_tenant(model)
 
-    def delete(self, tenant_id: UUID) -> None:
-        row = self.session.execute(
-            text("DELETE FROM tenants WHERE id = :id RETURNING id"),
-            {"id": str(tenant_id)},
-        ).mappings().first()
-        if not row:
+    async def delete(self, tenant_id: UUID) -> None:
+        model = await self.session.scalar(
+            select(TenantModel).where(TenantModel.id == tenant_id).with_for_update()
+        )
+        if not model:
             raise NotFoundError(f"tenant {tenant_id} not found")
+        await self.session.delete(model)
+        await self.session.flush()
 
-    def count_active_users(self, tenant_id: UUID) -> int:
-        row = self.session.execute(
-            text(
-                """
-                SELECT COUNT(*) AS total
-                FROM users
-                WHERE tenant_id = :tenant_id
-                  AND is_active = true
-                """
-            ),
-            {"tenant_id": str(tenant_id)},
-        ).mappings().one()
-        return int(row["total"])
+    async def count_active_users(self, tenant_id: UUID) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(UserModel)
+            .where(
+                and_(UserModel.tenant_id == tenant_id, UserModel.is_active.is_(True))
+            )
+        )
+        return int((await self.session.scalar(stmt)) or 0)
 
-    def count_active_instances(self, tenant_id: UUID) -> int:
-        row = self.session.execute(
-            text(
-                """
-                SELECT COUNT(*) AS total
-                FROM instances
-                WHERE tenant_id = :tenant_id
-                  AND status <> 'deleted'
-                """
-            ),
-            {"tenant_id": str(tenant_id)},
-        ).mappings().one()
-        return int(row["total"])
+    async def count_active_instances(self, tenant_id: UUID) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(InstanceModel)
+            .where(
+                and_(
+                    InstanceModel.tenant_id == tenant_id,
+                    InstanceModel.status != "deleted",
+                )
+            )
+        )
+        return int((await self.session.scalar(stmt)) or 0)
 
 
 class PostgresTenantQuotaRepository(TenantQuotaRepository):
-    def __init__(self, session: Session):
+    def __init__(self, session: AsyncSession):
         self.session = session
 
-    def get(self, tenant_id: UUID) -> TenantQuota | None:
-        row = self.session.execute(
-            text("SELECT * FROM tenant_quotas WHERE tenant_id = :tenant_id"),
-            {"tenant_id": str(tenant_id)},
-        ).mappings().first()
-        return _to_tenant_quota(row) if row else None
+    async def get(self, tenant_id: UUID) -> TenantQuota | None:
+        model = await self.session.scalar(
+            select(TenantQuotaModel).where(TenantQuotaModel.tenant_id == tenant_id)
+        )
+        return to_tenant_quota(model) if model else None
 
-    def upsert(
+    async def upsert(
         self,
         tenant_id: UUID,
         *,
@@ -161,57 +150,68 @@ class PostgresTenantQuotaRepository(TenantQuotaRepository):
         max_memory_mib: int,
         max_disk_gib: int,
     ) -> TenantQuota:
-        row = self.session.execute(
-            text(
-                """
-                INSERT INTO tenant_quotas (
-                    tenant_id, max_instances, max_cpu, max_memory_mib, max_disk_gib, updated_at
-                )
-                VALUES (
-                    :tenant_id, :max_instances, :max_cpu, :max_memory_mib, :max_disk_gib, :updated_at
-                )
-                ON CONFLICT (tenant_id) DO UPDATE
-                SET max_instances = EXCLUDED.max_instances,
-                    max_cpu = EXCLUDED.max_cpu,
-                    max_memory_mib = EXCLUDED.max_memory_mib,
-                    max_disk_gib = EXCLUDED.max_disk_gib,
-                    updated_at = EXCLUDED.updated_at
-                RETURNING *
-                """
-            ),
-            {
-                "tenant_id": str(tenant_id),
-                "max_instances": max_instances,
-                "max_cpu": max_cpu,
-                "max_memory_mib": max_memory_mib,
-                "max_disk_gib": max_disk_gib,
-                "updated_at": datetime.now(timezone.utc),
-            },
-        ).mappings().one()
-        return _to_tenant_quota(row)
+        now = datetime.now(timezone.utc)
+        stmt = (
+            pg_insert(TenantQuotaModel)
+            .values(
+                tenant_id=tenant_id,
+                max_instances=max_instances,
+                max_cpu=max_cpu,
+                max_memory_mib=max_memory_mib,
+                max_disk_gib=max_disk_gib,
+                updated_at=now,
+            )
+            .on_conflict_do_update(
+                index_elements=[TenantQuotaModel.tenant_id],
+                set_={
+                    "max_instances": max_instances,
+                    "max_cpu": max_cpu,
+                    "max_memory_mib": max_memory_mib,
+                    "max_disk_gib": max_disk_gib,
+                    "updated_at": now,
+                },
+            )
+            .returning(TenantQuotaModel)
+        )
+        model = await self.session.scalar(stmt)
+        assert model is not None
+        return to_tenant_quota(model)
 
 
 class PostgresTenantUsageReadRepository(TenantUsageReadPort):
-    def __init__(self, session: Session):
+    def __init__(self, session: AsyncSession):
         self.session = session
 
-    def get_usage(self, tenant_id: UUID) -> TenantUsage:
-        row = self.session.execute(
-            text(
-                """
-                SELECT
-                    CAST(:tenant_id AS UUID) AS tenant_id,
-                    COALESCE(v.used_instances, 0) AS used_instances,
-                    COALESCE(v.used_cpu, 0) AS used_cpu,
-                    COALESCE(v.used_memory_mib, 0) AS used_memory_mib,
-                    COALESCE(v.used_disk_gib, 0) AS used_disk_gib
-                FROM tenants t
-                LEFT JOIN tenant_resource_usage_view v ON v.tenant_id = t.id
-                WHERE t.id = :tenant_id
-                """
-            ),
-            {"tenant_id": str(tenant_id)},
-        ).mappings().first()
+    async def get_usage(self, tenant_id: UUID) -> TenantUsage:
+        used_instances = func.coalesce(
+            tenant_resource_usage_view.c.used_instances, 0
+        ).label("used_instances")
+        used_cpu = func.coalesce(tenant_resource_usage_view.c.used_cpu, 0).label(
+            "used_cpu"
+        )
+        used_memory = func.coalesce(
+            tenant_resource_usage_view.c.used_memory_mib, 0
+        ).label("used_memory_mib")
+        used_disk = func.coalesce(tenant_resource_usage_view.c.used_disk_gib, 0).label(
+            "used_disk_gib"
+        )
+
+        stmt = (
+            select(
+                TenantModel.id.label("tenant_id"),
+                used_instances,
+                used_cpu,
+                used_memory,
+                used_disk,
+            )
+            .select_from(TenantModel)
+            .outerjoin(
+                tenant_resource_usage_view,
+                tenant_resource_usage_view.c.tenant_id == TenantModel.id,
+            )
+            .where(TenantModel.id == tenant_id)
+        )
+        row = (await self.session.execute(stmt)).one_or_none()
         if not row:
             raise NotFoundError(f"tenant {tenant_id} not found")
-        return _to_tenant_usage(row)
+        return to_tenant_usage(row)

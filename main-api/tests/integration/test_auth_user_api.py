@@ -3,16 +3,23 @@ from __future__ import annotations
 import importlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, update
 
+from app.adapters.postgres_repositories.orm.instance import InstanceModel
+from app.adapters.postgres_repositories.orm.resource import ResourceCapacityModel
+from app.adapters.postgres_repositories.orm.task import InstanceTaskModel
 from app.config import get_settings
 
 postgres = pytest.importorskip("testcontainers.postgres")
 DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+
+
+def _enum_value(value):
+    return value.value if hasattr(value, "value") else value
 
 
 class DummyVmProvisioningAdapter:
@@ -43,7 +50,12 @@ class DummyVmImageSyncRpcAdapter:
             "status": "synced",
             "default_image_id": "ubuntu-24.04",
             "total_images": 1,
-            "synchronized_items": [{"id": "ubuntu-24.04", "path": "/var/lib/vm-manager/images/ubuntu-24.04/base.qcow2"}],
+            "synchronized_items": [
+                {
+                    "id": "ubuntu-24.04",
+                    "path": "/var/lib/vm-manager/images/ubuntu-24.04/base.qcow2",
+                }
+            ],
         }
 
 
@@ -70,9 +82,15 @@ def api_client(pg_container, monkeypatch):
     import app.adapters.rabbitmq_rpc as rpc_module
     import app.adapters.rabbitmq_image_sync_rpc as image_sync_module
 
-    monkeypatch.setattr(rpc_module, "RabbitMqVmProvisioningAdapter", DummyVmProvisioningAdapter)
-    monkeypatch.setattr(result_module, "RabbitMqVmResultConsumer", DummyVmResultConsumer)
-    monkeypatch.setattr(image_sync_module, "RabbitMqVmImageSyncRpcAdapter", DummyVmImageSyncRpcAdapter)
+    monkeypatch.setattr(
+        rpc_module, "RabbitMqVmProvisioningAdapter", DummyVmProvisioningAdapter
+    )
+    monkeypatch.setattr(
+        result_module, "RabbitMqVmResultConsumer", DummyVmResultConsumer
+    )
+    monkeypatch.setattr(
+        image_sync_module, "RabbitMqVmImageSyncRpcAdapter", DummyVmImageSyncRpcAdapter
+    )
 
     get_settings.cache_clear()
     import app.main as main_module
@@ -85,7 +103,9 @@ def api_client(pg_container, monkeypatch):
 
 
 def _login(client: TestClient, username: str, password: str) -> dict:
-    response = client.post("/auth/login", json={"username": username, "password": password})
+    response = client.post(
+        "/auth/login", json={"username": username, "password": password}
+    )
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -110,7 +130,9 @@ def test_images_endpoint_returns_catalog(api_client: TestClient):
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["items"]
-    assert any(item["id"] == "ubuntu-24.04" and item["is_default"] for item in payload["items"])
+    assert any(
+        item["id"] == "ubuntu-24.04" and item["is_default"] for item in payload["items"]
+    )
 
 
 @pytest.mark.integration
@@ -191,7 +213,9 @@ def test_refresh_token_revoked_after_admin_user_update(api_client: TestClient):
     assert update_resp.status_code == 200, update_resp.text
     assert update_resp.json()["role"] == "operator"
 
-    refresh_resp = api_client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    refresh_resp = api_client.post(
+        "/auth/refresh", json={"refresh_token": refresh_token}
+    )
     assert refresh_resp.status_code == 401
 
 
@@ -254,7 +278,9 @@ def test_audit_logs_admin_only_and_contains_user_create_event(api_client: TestCl
 @pytest.mark.integration
 def test_failed_login_writes_audit_log(api_client: TestClient):
     wrong_username = f"missing-{uuid4().hex[:8]}"
-    failed = api_client.post("/auth/login", json={"username": wrong_username, "password": "wrong-password"})
+    failed = api_client.post(
+        "/auth/login", json={"username": wrong_username, "password": "wrong-password"}
+    )
     assert failed.status_code == 401
 
     admin_tokens = _login(api_client, "admin", "admin1234")
@@ -277,40 +303,41 @@ def test_retry_api_returns_202_and_creates_new_task(api_client: TestClient):
     create_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": DEFAULT_TENANT_ID, "name": "retry-api-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": DEFAULT_TENANT_ID,
+            "name": "retry-api-vm",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert create_resp.status_code == 202, create_resp.text
     original_task_id = create_resp.json()["task_id"]
     instance_id = create_resp.json()["instance_id"]
 
     with api_client.app.state.session_factory() as session:
+        now = datetime.now(timezone.utc)
         session.execute(
-            text(
-                """
-                UPDATE instance_tasks
-                SET status = 'failed',
-                    error_code = 'QEMU_ERROR',
-                    error_message = 'forced failure',
-                    finished_at = :now,
-                    updated_at = :now
-                WHERE id = :task_id
-                """
-            ),
-            {"task_id": original_task_id, "now": datetime.now(timezone.utc)},
+            update(InstanceTaskModel)
+            .where(InstanceTaskModel.id == UUID(original_task_id))
+            .values(
+                status="failed",
+                error_code="QEMU_ERROR",
+                error_message="forced failure",
+                finished_at=now,
+                updated_at=now,
+            )
         )
         session.execute(
-            text(
-                """
-                UPDATE instances
-                SET status = 'error',
-                    reserve_resources = false,
-                    last_task_id = NULL,
-                    ip_address = NULL,
-                    updated_at = :now
-                WHERE id = :instance_id
-                """
-            ),
-            {"instance_id": instance_id, "now": datetime.now(timezone.utc)},
+            update(InstanceModel)
+            .where(InstanceModel.id == UUID(instance_id))
+            .values(
+                status="error",
+                reserve_resources=False,
+                last_task_id=None,
+                ip_address=None,
+                updated_at=now,
+            )
         )
         session.commit()
 
@@ -322,11 +349,12 @@ def test_retry_api_returns_202_and_creates_new_task(api_client: TestClient):
 
     with api_client.app.state.session_factory() as session:
         row = session.execute(
-            text("SELECT status, retry_of_task_id FROM instance_tasks WHERE id = :id"),
-            {"id": payload["task_id"]},
-        ).mappings().one()
-    assert row["status"] == "queued"
-    assert str(row["retry_of_task_id"]) == original_task_id
+            select(InstanceTaskModel.status, InstanceTaskModel.retry_of_task_id).where(
+                InstanceTaskModel.id == UUID(payload["task_id"])
+            )
+        ).one()
+    assert _enum_value(row[0]) == "queued"
+    assert str(row[1]) == original_task_id
 
 
 @pytest.mark.integration
@@ -381,17 +409,11 @@ def test_cancel_running_task_sets_cancel_pending(api_client: TestClient):
     task_id = create_resp.json()["task_id"]
 
     with api_client.app.state.session_factory() as session:
+        now = datetime.now(timezone.utc)
         session.execute(
-            text(
-                """
-                UPDATE instance_tasks
-                SET status = 'running',
-                    started_at = :now,
-                    updated_at = :now
-                WHERE id = :task_id
-                """
-            ),
-            {"task_id": task_id, "now": datetime.now(timezone.utc)},
+            update(InstanceTaskModel)
+            .where(InstanceTaskModel.id == UUID(task_id))
+            .values(status="running", started_at=now, updated_at=now)
         )
         session.commit()
 
@@ -431,32 +453,26 @@ def test_retry_cancel_audit_logs_are_written(api_client: TestClient):
     with api_client.app.state.session_factory() as session:
         now = datetime.now(timezone.utc)
         session.execute(
-            text(
-                """
-                UPDATE instance_tasks
-                SET status = 'failed',
-                    error_code = 'QEMU_ERROR',
-                    error_message = 'forced failure',
-                    finished_at = :now,
-                    updated_at = :now
-                WHERE id = :task_id
-                """
-            ),
-            {"task_id": original_task_id, "now": now},
+            update(InstanceTaskModel)
+            .where(InstanceTaskModel.id == UUID(original_task_id))
+            .values(
+                status="failed",
+                error_code="QEMU_ERROR",
+                error_message="forced failure",
+                finished_at=now,
+                updated_at=now,
+            )
         )
         session.execute(
-            text(
-                """
-                UPDATE instances
-                SET status = 'error',
-                    reserve_resources = false,
-                    last_task_id = NULL,
-                    ip_address = NULL,
-                    updated_at = :now
-                WHERE id = :instance_id
-                """
-            ),
-            {"instance_id": instance_id, "now": now},
+            update(InstanceModel)
+            .where(InstanceModel.id == UUID(instance_id))
+            .values(
+                status="error",
+                reserve_resources=False,
+                last_task_id=None,
+                ip_address=None,
+                updated_at=now,
+            )
         )
         session.commit()
 
@@ -466,19 +482,15 @@ def test_retry_cancel_audit_logs_are_written(api_client: TestClient):
     cancel_task_id = retry_resp.json()["task_id"]
     with api_client.app.state.session_factory() as session:
         session.execute(
-            text(
-                """
-                UPDATE instance_tasks
-                SET status = 'queued',
-                    updated_at = :now
-                WHERE id = :task_id
-                """
-            ),
-            {"task_id": cancel_task_id, "now": datetime.now(timezone.utc)},
+            update(InstanceTaskModel)
+            .where(InstanceTaskModel.id == UUID(cancel_task_id))
+            .values(status="queued", updated_at=datetime.now(timezone.utc))
         )
         session.commit()
 
-    cancel_resp = api_client.post(f"/tasks/{cancel_task_id}/cancel", headers=headers, json={"reason": "audit"})
+    cancel_resp = api_client.post(
+        f"/tasks/{cancel_task_id}/cancel", headers=headers, json={"reason": "audit"}
+    )
     assert cancel_resp.status_code == 202, cancel_resp.text
     assert cancel_resp.json()["status"] == "canceled"
 
@@ -488,7 +500,9 @@ def test_retry_cancel_audit_logs_are_written(api_client: TestClient):
         params={"action": "task.retry.requested", "target_type": "task"},
     )
     assert retry_logs.status_code == 200, retry_logs.text
-    assert any(item["target_id"] == original_task_id for item in retry_logs.json()["items"])
+    assert any(
+        item["target_id"] == original_task_id for item in retry_logs.json()["items"]
+    )
 
     cancel_logs = api_client.get(
         "/audit-logs",
@@ -496,7 +510,9 @@ def test_retry_cancel_audit_logs_are_written(api_client: TestClient):
         params={"action": "task.cancel.requested", "target_type": "task"},
     )
     assert cancel_logs.status_code == 200, cancel_logs.text
-    assert any(item["target_id"] == cancel_task_id for item in cancel_logs.json()["items"])
+    assert any(
+        item["target_id"] == cancel_task_id for item in cancel_logs.json()["items"]
+    )
 
 
 @pytest.mark.integration
@@ -507,7 +523,13 @@ def test_stop_start_endpoints_create_tasks_and_audit_logs(api_client: TestClient
     create_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": DEFAULT_TENANT_ID, "name": "stop-start-vm", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": DEFAULT_TENANT_ID,
+            "name": "stop-start-vm",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert create_resp.status_code == 202, create_resp.text
     create_task_id = create_resp.json()["task_id"]
@@ -516,28 +538,14 @@ def test_stop_start_endpoints_create_tasks_and_audit_logs(api_client: TestClient
     with api_client.app.state.session_factory() as session:
         now = datetime.now(timezone.utc)
         session.execute(
-            text(
-                """
-                UPDATE instance_tasks
-                SET status = 'succeeded',
-                    finished_at = :now,
-                    updated_at = :now
-                WHERE id = :task_id
-                """
-            ),
-            {"task_id": create_task_id, "now": now},
+            update(InstanceTaskModel)
+            .where(InstanceTaskModel.id == UUID(create_task_id))
+            .values(status="succeeded", finished_at=now, updated_at=now)
         )
         session.execute(
-            text(
-                """
-                UPDATE instances
-                SET status = 'running',
-                    reserve_resources = true,
-                    updated_at = :now
-                WHERE id = :instance_id
-                """
-            ),
-            {"instance_id": instance_id, "now": now},
+            update(InstanceModel)
+            .where(InstanceModel.id == UUID(instance_id))
+            .values(status="running", reserve_resources=True, updated_at=now)
         )
         session.commit()
 
@@ -549,28 +557,14 @@ def test_stop_start_endpoints_create_tasks_and_audit_logs(api_client: TestClient
     with api_client.app.state.session_factory() as session:
         now = datetime.now(timezone.utc)
         session.execute(
-            text(
-                """
-                UPDATE instance_tasks
-                SET status = 'succeeded',
-                    finished_at = :now,
-                    updated_at = :now
-                WHERE id = :task_id
-                """
-            ),
-            {"task_id": stop_task_id, "now": now},
+            update(InstanceTaskModel)
+            .where(InstanceTaskModel.id == UUID(stop_task_id))
+            .values(status="succeeded", finished_at=now, updated_at=now)
         )
         session.execute(
-            text(
-                """
-                UPDATE instances
-                SET status = 'stopped',
-                    reserve_resources = true,
-                    updated_at = :now
-                WHERE id = :instance_id
-                """
-            ),
-            {"instance_id": instance_id, "now": now},
+            update(InstanceModel)
+            .where(InstanceModel.id == UUID(instance_id))
+            .values(status="stopped", reserve_resources=True, updated_at=now)
         )
         session.commit()
 
@@ -620,7 +614,13 @@ def test_start_from_stopped_fails_when_tenant_quota_exceeded(api_client: TestCli
     vm1_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": tenant_id, "name": "quota-run", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": tenant_id,
+            "name": "quota-run",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert vm1_resp.status_code == 202, vm1_resp.text
     vm1_id = vm1_resp.json()["instance_id"]
@@ -629,7 +629,13 @@ def test_start_from_stopped_fails_when_tenant_quota_exceeded(api_client: TestCli
     vm2_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": tenant_id, "name": "quota-stop", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": tenant_id,
+            "name": "quota-stop",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert vm2_resp.status_code == 202, vm2_resp.text
     vm2_id = vm2_resp.json()["instance_id"]
@@ -638,32 +644,19 @@ def test_start_from_stopped_fails_when_tenant_quota_exceeded(api_client: TestCli
     with api_client.app.state.session_factory() as session:
         now = datetime.now(timezone.utc)
         session.execute(
-            text(
-                """
-                UPDATE instance_tasks
-                SET status = 'succeeded',
-                    finished_at = :now,
-                    updated_at = :now
-                WHERE id IN (:task1, :task2)
-                """
-            ),
-            {"task1": vm1_task, "task2": vm2_task, "now": now},
+            update(InstanceTaskModel)
+            .where(InstanceTaskModel.id.in_([UUID(vm1_task), UUID(vm2_task)]))
+            .values(status="succeeded", finished_at=now, updated_at=now)
         )
         session.execute(
-            text(
-                """
-                UPDATE instances
-                SET status = CASE
-                    WHEN id = :vm1_id THEN 'running'
-                    WHEN id = :vm2_id THEN 'stopped'
-                    ELSE status
-                END,
-                    reserve_resources = true,
-                    updated_at = :now
-                WHERE id IN (:vm1_id, :vm2_id)
-                """
-            ),
-            {"vm1_id": vm1_id, "vm2_id": vm2_id, "now": now},
+            update(InstanceModel)
+            .where(InstanceModel.id == UUID(vm1_id))
+            .values(status="running", reserve_resources=True, updated_at=now)
+        )
+        session.execute(
+            update(InstanceModel)
+            .where(InstanceModel.id == UUID(vm2_id))
+            .values(status="stopped", reserve_resources=True, updated_at=now)
         )
         session.commit()
 
@@ -692,7 +685,13 @@ def test_start_from_stopped_fails_when_host_capacity_exceeded(api_client: TestCl
     vm1_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": DEFAULT_TENANT_ID, "name": "cap-run", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": DEFAULT_TENANT_ID,
+            "name": "cap-run",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert vm1_resp.status_code == 202, vm1_resp.text
     vm1_id = vm1_resp.json()["instance_id"]
@@ -701,7 +700,13 @@ def test_start_from_stopped_fails_when_host_capacity_exceeded(api_client: TestCl
     vm2_resp = api_client.post(
         "/instances",
         headers=headers,
-        json={"tenant_id": DEFAULT_TENANT_ID, "name": "cap-stop", "cpu": 1, "memory_mib": 1024, "disk_gib": 20},
+        json={
+            "tenant_id": DEFAULT_TENANT_ID,
+            "name": "cap-stop",
+            "cpu": 1,
+            "memory_mib": 1024,
+            "disk_gib": 20,
+        },
     )
     assert vm2_resp.status_code == 202, vm2_resp.text
     vm2_id = vm2_resp.json()["instance_id"]
@@ -710,43 +715,24 @@ def test_start_from_stopped_fails_when_host_capacity_exceeded(api_client: TestCl
     with api_client.app.state.session_factory() as session:
         now = datetime.now(timezone.utc)
         session.execute(
-            text(
-                """
-                UPDATE instance_tasks
-                SET status = 'succeeded',
-                    finished_at = :now,
-                    updated_at = :now
-                WHERE id IN (:task1, :task2)
-                """
-            ),
-            {"task1": vm1_task, "task2": vm2_task, "now": now},
+            update(InstanceTaskModel)
+            .where(InstanceTaskModel.id.in_([UUID(vm1_task), UUID(vm2_task)]))
+            .values(status="succeeded", finished_at=now, updated_at=now)
         )
         session.execute(
-            text(
-                """
-                UPDATE instances
-                SET status = CASE
-                    WHEN id = :vm1_id THEN 'running'
-                    WHEN id = :vm2_id THEN 'stopped'
-                    ELSE status
-                END,
-                    reserve_resources = true,
-                    updated_at = :now
-                WHERE id IN (:vm1_id, :vm2_id)
-                """
-            ),
-            {"vm1_id": vm1_id, "vm2_id": vm2_id, "now": now},
+            update(InstanceModel)
+            .where(InstanceModel.id == UUID(vm1_id))
+            .values(status="running", reserve_resources=True, updated_at=now)
         )
         session.execute(
-            text(
-                """
-                UPDATE resource_capacity
-                SET total_cpu = 1,
-                    total_memory_mib = 2048,
-                    total_disk_gib = 5000
-                WHERE host_node = 'localhost'
-                """
-            )
+            update(InstanceModel)
+            .where(InstanceModel.id == UUID(vm2_id))
+            .values(status="stopped", reserve_resources=True, updated_at=now)
+        )
+        session.execute(
+            update(ResourceCapacityModel)
+            .where(ResourceCapacityModel.host_node == "localhost")
+            .values(total_cpu=1, total_memory_mib=2048, total_disk_gib=5000)
         )
         session.commit()
 

@@ -18,7 +18,9 @@ def test_console_ticket_is_single_use():
     instance_id = uuid4()
     user_id = uuid4()
 
-    record = store.issue(instance_id=instance_id, issued_by_user_id=user_id, ttl_seconds=300)
+    record = store.issue(
+        instance_id=instance_id, issued_by_user_id=user_id, ttl_seconds=300
+    )
     first_consume = store.consume(ticket=record.ticket, instance_id=instance_id)
     second_consume = store.consume(ticket=record.ticket, instance_id=instance_id)
 
@@ -31,7 +33,9 @@ def test_console_ticket_rejects_expired_ticket():
     instance_id = uuid4()
     user_id = uuid4()
 
-    record = store.issue(instance_id=instance_id, issued_by_user_id=user_id, ttl_seconds=1)
+    record = store.issue(
+        instance_id=instance_id, issued_by_user_id=user_id, ttl_seconds=1
+    )
     record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
 
     assert store.consume(ticket=record.ticket, instance_id=instance_id) is None

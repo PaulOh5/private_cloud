@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     outbox_max_attempts: int = 20
     outbox_retry_max_seconds: int = 60
     outbox_relay_enabled: bool = True
-    base_image_url: str = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    base_image_url: str = (
+        "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    )
     vm_image_catalog_json: str = ""
     vm_image_default_id: str = ""
     vm_image_allow_insecure_no_checksum: bool = False
@@ -54,11 +56,22 @@ class Settings(BaseSettings):
     bootstrap_admin_role: Literal["admin", "operator", "viewer"] = "admin"
 
     @property
-    def postgres_dsn(self) -> str:
+    def postgres_async_dsn(self) -> str:
         return (
             f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def postgres_sync_dsn(self) -> str:
+        return (
+            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def postgres_dsn(self) -> str:
+        return self.postgres_async_dsn
 
     @property
     def postgres_listener_dsn(self) -> str:

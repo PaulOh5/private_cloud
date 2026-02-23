@@ -3,9 +3,12 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.postgres_repositories import PostgresRefreshTokenRepository, PostgresUserRepository
+from app.adapters.postgres_repositories import (
+    PostgresRefreshTokenRepository,
+    PostgresUserRepository,
+)
 from app.api.dependencies import get_current_user, get_session, get_uow, require_roles
 from app.api.schemas import (
     CreateUserRequest,
@@ -53,23 +56,27 @@ def _raise_conflict_as_http(exc: ConflictError) -> None:
         "admin user must not have tenant_id",
         "tenant_id is required for non-admin user",
     }:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=message
+        ) from exc
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message) from exc
 
 
 @role_router.get("", response_model=ListRolesResponse)
-def list_roles(
+async def list_roles(
     _: User = Depends(require_roles("admin")),
-    _session: Session = Depends(get_session),
+    _session: AsyncSession = Depends(get_session),
     _uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ):
     handler = ListRolesHandler()
-    return ListRolesResponse(items=[RoleResponse(name=name) for name in handler.handle()])
+    return ListRolesResponse(
+        items=[RoleResponse(name=name) for name in await handler.handle()]
+    )
 
 
 @user_router.get("", response_model=ListUsersResponse)
-def list_users(
-    session: Session = Depends(get_session),
+async def list_users(
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     _current_user: User = Depends(require_roles("admin")),
     limit: int = Query(default=20, ge=1, le=200),
@@ -80,7 +87,7 @@ def list_users(
     tenant_id: UUID | None = Query(default=None),
 ):
     handler = ListUsersHandler(user_repository=PostgresUserRepository(session))
-    result = handler.handle(
+    result = await handler.handle(
         ListUsersQuery(
             limit=limit,
             offset=offset,
@@ -99,28 +106,30 @@ def list_users(
 
 
 @user_router.get("/{user_id}", response_model=UserResponse)
-def get_user(
+async def get_user(
     user_id: UUID,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(get_current_user),
 ):
     if current_user.role != "admin" and current_user.id != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
-    use_cases = GetUserHandler(user_repository=PostgresUserRepository(session))
+    handler = GetUserHandler(user_repository=PostgresUserRepository(session))
     try:
-        user = use_cases.handle(user_id)
+        user = await handler.handle(user_id)
     except UserNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="user not found"
+        ) from exc
     return _to_user_response(user)
 
 
 @user_router.post("", response_model=UserResponse, status_code=201)
-def create_user(
+async def create_user(
     body: CreateUserRequest,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("admin")),
 ):
@@ -131,7 +140,7 @@ def create_user(
         uow=uow,
     )
     try:
-        user = handler.handle(
+        user = await handler.handle(
             CreateUserCommand(
                 username=body.username,
                 password=body.password,
@@ -147,11 +156,11 @@ def create_user(
 
 
 @user_router.patch("/{user_id}", response_model=UserResponse)
-def update_user(
+async def update_user(
     user_id: UUID,
     body: UpdateUserRequest,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("admin")),
 ):
@@ -162,7 +171,7 @@ def update_user(
         uow=uow,
     )
     try:
-        updated = handler.handle(
+        updated = await handler.handle(
             UpdateUserCommand(
                 user_id=user_id,
                 role=body.role,
@@ -173,17 +182,19 @@ def update_user(
             )
         )
     except UserNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="user not found"
+        ) from exc
     except ConflictError as exc:
         _raise_conflict_as_http(exc)
     return _to_user_response(updated)
 
 
 @user_router.delete("/{user_id}", status_code=204)
-def deactivate_user(
+async def deactivate_user(
     user_id: UUID,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
     current_user: User = Depends(require_roles("admin")),
 ):
@@ -194,9 +205,13 @@ def deactivate_user(
         uow=uow,
     )
     try:
-        handler.handle(DeactivateUserCommand(user_id=user_id, actor=current_user))
+        await handler.handle(DeactivateUserCommand(user_id=user_id, actor=current_user))
     except UserNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="user not found"
+        ) from exc
     except ConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     return Response(status_code=204)

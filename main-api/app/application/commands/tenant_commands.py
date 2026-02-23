@@ -1,12 +1,15 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from uuid import UUID
-
 from app.application.services.audit_logger import AuditLogger
 from app.domain.auth import User
 from app.domain.errors import ConflictError, QuotaConflictError, TenantNotFoundError
-from app.ports import TenantQuotaRepository, TenantRepository, TenantUsageReadPort, UnitOfWork
+from app.ports import (
+    TenantQuotaRepository,
+    TenantRepository,
+    TenantUsageReadPort,
+    UnitOfWork,
+)
 
 DEFAULT_TENANT_KEY = "default"
 
@@ -60,25 +63,23 @@ class CreateTenantHandler:
         self.audit_logger = audit_logger
         self.uow = uow
 
-    def handle(self, command: CreateTenantCommand):
+    async def handle(self, command: CreateTenantCommand):
         try:
-            tenant = self.tenant_repository.create(
+            tenant = await self.tenant_repository.create(
                 key=command.key,
                 name=command.name,
                 is_active=command.is_active,
             )
         except ConflictError:
             raise ConflictError("tenant key already exists")
-
-        quota = self.tenant_quota_repository.upsert(
+        quota = await self.tenant_quota_repository.upsert(
             tenant.id,
             max_instances=command.max_instances,
             max_cpu=command.max_cpu,
             max_memory_mib=command.max_memory_mib,
             max_disk_gib=command.max_disk_gib,
         )
-
-        self.audit_logger.write(
+        await self.audit_logger.write(
             action="tenant.create",
             target_type="tenant",
             target_id=str(tenant.id),
@@ -92,7 +93,7 @@ class CreateTenantHandler:
                 "max_disk_gib": quota.max_disk_gib,
             },
         )
-        self.uow.commit()
+        await self.uow.commit()
         return tenant, quota
 
 
@@ -109,19 +110,18 @@ class UpdateTenantHandler:
         self.audit_logger = audit_logger
         self.uow = uow
 
-    def handle(self, command: UpdateTenantCommand):
-        tenant = self.tenant_repository.get(command.tenant_id)
+    async def handle(self, command: UpdateTenantCommand):
+        tenant = await self.tenant_repository.get(command.tenant_id)
         if not tenant:
             raise TenantNotFoundError(f"tenant {command.tenant_id} not found")
         if tenant.key == DEFAULT_TENANT_KEY and command.is_active is False:
             raise ConflictError("default tenant cannot be deactivated")
-
-        updated = self.tenant_repository.update(
+        updated = await self.tenant_repository.update(
             command.tenant_id,
             name=command.name,
             is_active=command.is_active,
         )
-        self.audit_logger.write(
+        await self.audit_logger.write(
             action="tenant.update",
             target_type="tenant",
             target_id=str(updated.id),
@@ -129,8 +129,8 @@ class UpdateTenantHandler:
             tenant_id=updated.id,
             metadata={"name": updated.name, "is_active": updated.is_active},
         )
-        self.uow.commit()
-        return updated, self.tenant_quota_repository.get(updated.id)
+        await self.uow.commit()
+        return updated, await self.tenant_quota_repository.get(updated.id)
 
 
 class UpdateTenantQuotaHandler:
@@ -148,29 +148,29 @@ class UpdateTenantQuotaHandler:
         self.audit_logger = audit_logger
         self.uow = uow
 
-    def handle(self, command: UpdateTenantQuotaCommand):
-        tenant = self.tenant_repository.get(command.tenant_id)
+    async def handle(self, command: UpdateTenantQuotaCommand):
+        tenant = await self.tenant_repository.get(command.tenant_id)
         if not tenant:
             raise TenantNotFoundError(f"tenant {command.tenant_id} not found")
-
-        usage = self.tenant_usage_read_port.get_usage(command.tenant_id)
+        usage = await self.tenant_usage_read_port.get_usage(command.tenant_id)
         if command.max_instances < usage.used_instances:
             raise QuotaConflictError("max_instances cannot be lower than current usage")
         if command.max_cpu < usage.used_cpu:
             raise QuotaConflictError("max_cpu cannot be lower than current usage")
         if command.max_memory_mib < usage.used_memory_mib:
-            raise QuotaConflictError("max_memory_mib cannot be lower than current usage")
+            raise QuotaConflictError(
+                "max_memory_mib cannot be lower than current usage"
+            )
         if command.max_disk_gib < usage.used_disk_gib:
             raise QuotaConflictError("max_disk_gib cannot be lower than current usage")
-
-        updated = self.tenant_quota_repository.upsert(
+        updated = await self.tenant_quota_repository.upsert(
             command.tenant_id,
             max_instances=command.max_instances,
             max_cpu=command.max_cpu,
             max_memory_mib=command.max_memory_mib,
             max_disk_gib=command.max_disk_gib,
         )
-        self.audit_logger.write(
+        await self.audit_logger.write(
             action="tenant.quota.update",
             target_type="tenant",
             target_id=str(command.tenant_id),
@@ -183,7 +183,7 @@ class UpdateTenantQuotaHandler:
                 "max_disk_gib": updated.max_disk_gib,
             },
         )
-        self.uow.commit()
+        await self.uow.commit()
         return updated
 
 
@@ -198,23 +198,22 @@ class DeleteTenantHandler:
         self.audit_logger = audit_logger
         self.uow = uow
 
-    def handle(self, command: DeleteTenantCommand) -> None:
-        tenant = self.tenant_repository.get(command.tenant_id)
+    async def handle(self, command: DeleteTenantCommand) -> None:
+        tenant = await self.tenant_repository.get(command.tenant_id)
         if not tenant:
             raise TenantNotFoundError(f"tenant {command.tenant_id} not found")
         if tenant.key == DEFAULT_TENANT_KEY:
             raise ConflictError("default tenant cannot be deleted")
-        if self.tenant_repository.count_active_users(command.tenant_id) > 0:
+        if await self.tenant_repository.count_active_users(command.tenant_id) > 0:
             raise ConflictError("tenant has active users")
-        if self.tenant_repository.count_active_instances(command.tenant_id) > 0:
+        if await self.tenant_repository.count_active_instances(command.tenant_id) > 0:
             raise ConflictError("tenant has active instances")
-
-        self.tenant_repository.delete(command.tenant_id)
-        self.audit_logger.write(
+        await self.tenant_repository.delete(command.tenant_id)
+        await self.audit_logger.write(
             action="tenant.delete",
             target_type="tenant",
             target_id=str(command.tenant_id),
             actor_user=command.actor,
             tenant_id=command.tenant_id,
         )
-        self.uow.commit()
+        await self.uow.commit()

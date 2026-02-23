@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
-
 from app.domain.models import Tenant, TenantQuota
 from app.ports import TenantQuotaRepository, TenantRepository
 
@@ -26,12 +24,16 @@ class ListTenantsResult:
 
 
 class ListTenantsHandler:
-    def __init__(self, tenant_repository: TenantRepository, tenant_quota_repository: TenantQuotaRepository):
+    def __init__(
+        self,
+        tenant_repository: TenantRepository,
+        tenant_quota_repository: TenantQuotaRepository,
+    ):
         self.tenant_repository = tenant_repository
         self.tenant_quota_repository = tenant_quota_repository
 
-    def handle(self, query: ListTenantsQuery) -> ListTenantsResult:
-        tenants, total = self.tenant_repository.list(
+    async def handle(self, query: ListTenantsQuery) -> ListTenantsResult:
+        tenants, total = await self.tenant_repository.list(
             limit=query.limit,
             offset=query.offset,
             is_active=query.is_active,
@@ -39,7 +41,7 @@ class ListTenantsHandler:
         items = [
             TenantWithQuota(
                 tenant=tenant,
-                quota=self.tenant_quota_repository.get(tenant.id),
+                quota=await self.tenant_quota_repository.get(tenant.id),
             )
             for tenant in tenants
         ]

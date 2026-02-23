@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.postgres_repositories import PostgresRefreshTokenRepository, PostgresTenantRepository, PostgresUserRepository
+from app.adapters.postgres_repositories import (
+    PostgresRefreshTokenRepository,
+    PostgresTenantRepository,
+    PostgresUserRepository,
+)
 from app.api.dependencies import get_current_user, get_session, get_uow
-from app.api.schemas import AccessTokenResponse, CurrentUserResponse, LoginRequest, RefreshTokenRequest
+from app.api.schemas import (
+    AccessTokenResponse,
+    CurrentUserResponse,
+    LoginRequest,
+    RefreshTokenRequest,
+)
 from app.application.services.audit_logger import AuditLogger
 from app.application.commands.auth_commands import (
     AuthCommandError,
@@ -23,10 +32,10 @@ auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @auth_router.post("/login", response_model=AccessTokenResponse)
-def login(
+async def login(
     body: LoginRequest,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ):
     handler = LoginHandler(
@@ -38,7 +47,9 @@ def login(
         uow=uow,
     )
     try:
-        tokens = handler.handle(LoginCommand(username=body.username, password=body.password))
+        tokens = await handler.handle(
+            LoginCommand(username=body.username, password=body.password)
+        )
     except AuthCommandError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return AccessTokenResponse(
@@ -49,10 +60,10 @@ def login(
 
 
 @auth_router.post("/refresh", response_model=AccessTokenResponse)
-def refresh_token(
+async def refresh_token(
     body: RefreshTokenRequest,
     request: Request,
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ):
     handler = RefreshTokenHandler(
@@ -64,7 +75,9 @@ def refresh_token(
         uow=uow,
     )
     try:
-        tokens = handler.handle(RefreshTokenCommand(refresh_token=body.refresh_token))
+        tokens = await handler.handle(
+            RefreshTokenCommand(refresh_token=body.refresh_token)
+        )
     except AuthCommandError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return AccessTokenResponse(
@@ -75,11 +88,11 @@ def refresh_token(
 
 
 @auth_router.post("/logout", status_code=204)
-def logout(
+async def logout(
     body: RefreshTokenRequest,
     request: Request,
     current_user: User = Depends(get_current_user),
-    session: Session = Depends(get_session),
+    session: AsyncSession = Depends(get_session),
     uow: SqlAlchemyUnitOfWork = Depends(get_uow),
 ):
     handler = LogoutHandler(
@@ -90,12 +103,14 @@ def logout(
         audit_logger=AuditLogger(session, request),
         uow=uow,
     )
-    handler.handle(LogoutCommand(refresh_token=body.refresh_token, current_user=current_user))
+    await handler.handle(
+        LogoutCommand(refresh_token=body.refresh_token, current_user=current_user)
+    )
     return Response(status_code=204)
 
 
 @auth_router.get("/me", response_model=CurrentUserResponse)
-def me(current_user: User = Depends(get_current_user)):
+async def me(current_user: User = Depends(get_current_user)):
     return CurrentUserResponse(
         id=current_user.id,
         username=current_user.username,

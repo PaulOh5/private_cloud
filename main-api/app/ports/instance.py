@@ -4,20 +4,26 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from uuid import UUID
 
-from app.domain.models import Instance, InstanceTask, ResourceSpec, TaskCommand, TaskStatus
+from app.domain.models import (
+    Instance,
+    InstanceTask,
+    ResourceSpec,
+    TaskCommand,
+    TaskStatus,
+)
 
 
 class InstanceRepository(ABC):
     @abstractmethod
-    def get_for_update(self, instance_id: UUID) -> Instance | None:
+    async def get_for_update(self, instance_id: UUID) -> Instance | None:
         raise NotImplementedError
 
     @abstractmethod
-    def create(self, instance: Instance) -> Instance:
+    async def create(self, instance: Instance) -> Instance:
         raise NotImplementedError
 
     @abstractmethod
-    def update_spec(
+    async def update_spec(
         self,
         instance_id: UUID,
         spec: ResourceSpec,
@@ -30,7 +36,7 @@ class InstanceRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def update_state(
+    async def update_state(
         self,
         instance_id: UUID,
         status: str,
@@ -44,11 +50,13 @@ class InstanceRepository(ABC):
 
 class InstanceReadRepository(ABC):
     @abstractmethod
-    def get(self, instance_id: UUID, tenant_id: UUID | None = None) -> Instance | None:
+    async def get(
+        self, instance_id: UUID, tenant_id: UUID | None = None
+    ) -> Instance | None:
         raise NotImplementedError
 
     @abstractmethod
-    def list(
+    async def list(
         self,
         limit: int,
         offset: int,
@@ -61,23 +69,27 @@ class InstanceReadRepository(ABC):
 
 class TaskRepository(ABC):
     @abstractmethod
-    def has_active_task(self, instance_id: UUID) -> bool:
+    async def has_active_task(self, instance_id: UUID) -> bool:
         raise NotImplementedError
 
     @abstractmethod
-    def create_task(self, task: InstanceTask) -> InstanceTask:
+    async def create_task(self, task: InstanceTask) -> InstanceTask:
         raise NotImplementedError
 
     @abstractmethod
-    def get(self, task_id: UUID) -> InstanceTask | None:
+    async def get(self, task_id: UUID) -> InstanceTask | None:
         raise NotImplementedError
 
     @abstractmethod
-    def get_for_update(self, task_id: UUID) -> InstanceTask | None:
+    async def get_tenant_id(self, task_id: UUID) -> UUID | None:
         raise NotImplementedError
 
     @abstractmethod
-    def list(
+    async def get_for_update(self, task_id: UUID) -> InstanceTask | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list(
         self,
         limit: int,
         offset: int,
@@ -89,11 +101,11 @@ class TaskRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def mark_running(self, task_id: UUID, attempt_count: int) -> InstanceTask:
+    async def mark_running(self, task_id: UUID, attempt_count: int) -> InstanceTask:
         raise NotImplementedError
 
     @abstractmethod
-    def mark_cancel_pending(
+    async def mark_cancel_pending(
         self,
         task_id: UUID,
         canceled_by: UUID | None,
@@ -102,7 +114,7 @@ class TaskRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def mark_canceled(
+    async def mark_canceled(
         self,
         task_id: UUID,
         attempt_count: int,
@@ -115,7 +127,7 @@ class TaskRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def clone_for_retry(
+    async def clone_for_retry(
         self,
         source_task: InstanceTask,
         new_task_id: UUID,
@@ -125,7 +137,7 @@ class TaskRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def mark_terminal(
+    async def mark_terminal(
         self,
         task_id: UUID,
         status: TaskStatus,

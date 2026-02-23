@@ -78,7 +78,11 @@ def load_vm_image_catalog(settings: Settings) -> VmImageCatalog:
             raise ValueError(f"unsupported image format for {image_id}: {image_format}")
 
         sha256_value = str(raw.get("sha256", "")).strip().lower() or None
-        if sha256_value is None and configured_catalog and not settings.vm_image_allow_insecure_no_checksum:
+        if (
+            sha256_value is None
+            and configured_catalog
+            and not settings.vm_image_allow_insecure_no_checksum
+        ):
             raise ValueError(f"sha256 is required for image {image_id}")
         if sha256_value is not None and not _SHA256_PATTERN.match(sha256_value):
             raise ValueError(f"invalid sha256 for image {image_id}")
@@ -113,4 +117,7 @@ def load_vm_image_catalog(settings: Settings) -> VmImageCatalog:
         else:
             raise ValueError("no default image configured")
 
-    return VmImageCatalog(entries=tuple(by_id[image_id] for image_id in ordered_ids), default_id=default_id)
+    return VmImageCatalog(
+        entries=tuple(by_id[image_id] for image_id in ordered_ids),
+        default_id=default_id,
+    )

@@ -26,7 +26,9 @@ def hash_password(password: str, *, iterations: int = 390000) -> str:
 
 def verify_password(password: str, encoded_hash: str) -> bool:
     try:
-        scheme, iterations_text, salt_text, digest_text = encoded_hash.split("$", maxsplit=3)
+        scheme, iterations_text, salt_text, digest_text = encoded_hash.split(
+            "$", maxsplit=3
+        )
         if scheme != "pbkdf2_sha256":
             return False
         iterations = int(iterations_text)
@@ -35,7 +37,9 @@ def verify_password(password: str, encoded_hash: str) -> bool:
     except (ValueError, TypeError):
         return False
 
-    candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    candidate = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, iterations
+    )
     return hmac.compare_digest(candidate, expected_digest)
 
 
